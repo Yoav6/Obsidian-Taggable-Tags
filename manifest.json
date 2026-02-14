@@ -1,9 +1,9 @@
 {
-	"id": "copy-outline",
-	"name": "Copy Outline",
-	"version": "1.0.0",
+	"id": "taggable-tags",
+	"name": "Taggable Tags",
+	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Adds a button to copy the current note's outline to clipboard.",
+	"description": "Turn tags into taggable tag notes and sync between your tag and folder hierarchy.",
 	"author": "Yoav Ravid",
 	"authorUrl": "https://x.com/YoavRavid",
 	"fundingUrl": "",
