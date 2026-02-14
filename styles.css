@@ -6,3 +6,81 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* Flatten file structure modal styles */
+.flatten-folder-suggestions {
+	margin: 1em 0;
+}
+
+.flatten-suggestions-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5em;
+	margin-top: 0.5em;
+}
+
+.flatten-suggestion-chip {
+	padding: 0.25em 0.75em;
+	background-color: var(--background-modifier-hover);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	transition: background-color 0.15s ease;
+}
+
+.flatten-suggestion-chip:hover {
+	background-color: var(--background-modifier-active-hover);
+}
+
+.flatten-ignored-folders {
+	margin: 1em 0;
+	padding: 1em;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+}
+
+.flatten-folder-list {
+	list-style: none;
+	padding: 0;
+	margin: 0.5em 0 0 0;
+}
+
+.flatten-folder-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.5em;
+	margin: 0.25em 0;
+	background-color: var(--background-primary);
+	border-radius: var(--radius-s);
+}
+
+.flatten-remove-btn {
+	background: none;
+	border: none;
+	color: var(--text-muted);
+	cursor: pointer;
+	font-size: 1.2em;
+	padding: 0 0.5em;
+	line-height: 1;
+}
+
+.flatten-remove-btn:hover {
+	color: var(--text-error);
+}
+
+.flatten-button-container {
+	margin-top: 1.5em;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 1em;
+}
+
+.flatten-button-container .setting-item {
+	border-top: none;
+	padding-top: 0;
+}
+
+.flatten-button-container .setting-item-control {
+	justify-content: flex-end;
+	gap: 0.5em;
+}

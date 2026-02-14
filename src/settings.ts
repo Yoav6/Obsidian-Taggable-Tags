@@ -38,7 +38,7 @@ export interface TaggableTagsSettings {
 }
 
 export const DEFAULT_SETTINGS: TaggableTagsSettings = {
-	autoCreateFiles: true,
+	autoCreateFiles: false,
 	confirmUnusedTagDeletion: true,
 	forceLowercase: true,
 	// Tag property defaults

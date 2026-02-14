@@ -10,6 +10,7 @@ import { registerTagExplorerView, TAG_EXPLORER_VIEW_TYPE } from './ui/tag-explor
 import { setupTagClickNavigation } from './ui/tag-click-navigation';
 import { showRearrangeTagsModal } from './ui/rearrange-tags-modal';
 import { flattenNestedTags } from './commands/flatten-nested-tags';
+import { flattenFileStructure } from './commands/flatten-file-structure';
 
 export default class TaggableTagsPlugin extends Plugin {
 	settings: TaggableTagsSettings;
@@ -35,6 +36,12 @@ export default class TaggableTagsPlugin extends Plugin {
 			id: 'flatten-nested-tags',
 			name: 'Utility: flatten nested tags (vault-wide)',
 			callback: () => flattenNestedTags(this),
+		});
+
+		this.addCommand({
+			id: 'flatten-file-structure',
+			name: 'Utility: flatten file structure (vault-wide)',
+			callback: () => flattenFileStructure(this),
 		});
 		
 		// Wait for layout to be ready before initializing
