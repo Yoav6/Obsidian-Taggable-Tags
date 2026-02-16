@@ -93,7 +93,8 @@ If your plugin does not need CSS, delete this file.
 }
 
 .taggable-tags-warning {
-	background-color: var(--background-modifier-error);
+	background-color: var(--background-secondary);
+	border-left: 4px solid var(--text-warning);
 	padding: 1em;
 	border-radius: var(--radius-m);
 	margin: 1em 0;

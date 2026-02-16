@@ -9,6 +9,7 @@ export class MigrationSettingsModal extends Modal {
 	private plugin: TaggableTagsPlugin;
 	private resolvePromise: ((value: MigrationSettings | null) => void) | null = null;
 	private settings: MigrationSettings;
+	private userMadeChoice = false;
 
 	constructor(plugin: TaggableTagsPlugin) {
 		super(plugin.app);
@@ -27,6 +28,7 @@ export class MigrationSettingsModal extends Modal {
 	prompt(): Promise<MigrationSettings | null> {
 		return new Promise((resolve) => {
 			this.resolvePromise = resolve;
+			this.userMadeChoice = false;
 			this.open();
 		});
 	}
@@ -129,8 +131,9 @@ export class MigrationSettingsModal extends Modal {
 				btn
 					.setButtonText('Cancel')
 					.onClick(() => {
-						this.close();
+						this.userMadeChoice = true;
 						this.resolvePromise?.(null);
+						this.close();
 					})
 			)
 			.addButton((btn) =>
@@ -138,8 +141,9 @@ export class MigrationSettingsModal extends Modal {
 					.setButtonText('Preview changes')
 					.setCta()
 					.onClick(() => {
-						this.close();
+						this.userMadeChoice = true;
 						this.resolvePromise?.(this.settings);
+						this.close();
 					})
 			);
 	}
@@ -148,9 +152,9 @@ export class MigrationSettingsModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		// If modal was closed without a choice, treat as cancel
-		if (this.resolvePromise) {
+		if (!this.userMadeChoice && this.resolvePromise) {
 			this.resolvePromise(null);
-			this.resolvePromise = null;
 		}
+		this.resolvePromise = null;
 	}
 }

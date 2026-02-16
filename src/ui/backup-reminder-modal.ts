@@ -7,6 +7,7 @@ import type TaggableTagsPlugin from '../main';
 export class BackupReminderModal extends Modal {
 	private plugin: TaggableTagsPlugin;
 	private resolvePromise: ((value: boolean) => void) | null = null;
+	private userMadeChoice = false;
 
 	constructor(plugin: TaggableTagsPlugin) {
 		super(plugin.app);
@@ -19,6 +20,7 @@ export class BackupReminderModal extends Modal {
 	prompt(): Promise<boolean> {
 		return new Promise((resolve) => {
 			this.resolvePromise = resolve;
+			this.userMadeChoice = false;
 			this.open();
 		});
 	}
@@ -55,8 +57,9 @@ export class BackupReminderModal extends Modal {
 				btn
 					.setButtonText('Cancel')
 					.onClick(() => {
-						this.close();
+						this.userMadeChoice = true;
 						this.resolvePromise?.(false);
+						this.close();
 					})
 			)
 			.addButton((btn) =>
@@ -64,8 +67,9 @@ export class BackupReminderModal extends Modal {
 					.setButtonText('I have a backup, continue')
 					.setCta()
 					.onClick(() => {
-						this.close();
+						this.userMadeChoice = true;
 						this.resolvePromise?.(true);
+						this.close();
 					})
 			);
 	}
@@ -73,10 +77,10 @@ export class BackupReminderModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		// If modal was closed without a choice, treat as cancel
-		if (this.resolvePromise) {
+		// If modal was closed without a choice (e.g., clicking outside), treat as cancel
+		if (!this.userMadeChoice && this.resolvePromise) {
 			this.resolvePromise(false);
-			this.resolvePromise = null;
 		}
+		this.resolvePromise = null;
 	}
 }
