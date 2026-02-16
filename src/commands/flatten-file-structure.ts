@@ -144,7 +144,7 @@ async function findUniquePath(plugin: TaggableTagsPlugin, fileName: string): Pro
  * Works bottom-up to handle nested folders.
  * Returns the number of folders deleted.
  */
-async function deleteEmptyFolders(plugin: TaggableTagsPlugin, ignoredFolders: string[]): Promise<number> {
+export async function deleteEmptyFolders(plugin: TaggableTagsPlugin, ignoredFolders: string[]): Promise<number> {
 	let deletedCount = 0;
 	let changed = true;
 

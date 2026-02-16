@@ -4,7 +4,9 @@ import type { TagIndex } from './tag-index';
 import { markPluginInitiatedChange, isPluginInitiatedChange } from './file-rename-sync';
 import { setFirstTag, removeTag } from '../utils/tag-ordering';
 import { askKeepFolderTag } from '../ui/keep-folder-tag-modal';
-import { generateTagFileContent } from '../utils/tag-template';
+import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
+import { namesMatch } from '../utils/name-matching';
+import { deleteEmptyFolders } from '../commands/flatten-file-structure';
 
 // Folder names that should not trigger auto-creation of a tag file (e.g. Obsidian's default "untitled")
 const PLACEHOLDER_FOLDER_NAMES = ['Untitled'];
@@ -342,13 +344,15 @@ export function resolveTagPath(tagIndex: TagIndex, tag: string): string {
 
 /**
  * Get the target folder path for a file based on its first effective tag.
+ * If the file has no tags but is in a folder, it stays in that folder (doesn't move to root).
  */
 export function getTargetFolderForFile(plugin: TaggableTagsPlugin, file: TFile): string {
 	const effectiveFirstTag = getEffectiveFirstTag(plugin, file);
 	
 	if (!effectiveFirstTag) {
-		// No tags or only excluded tags - file goes to vault root
-		return '';
+		// No tags or only excluded tags - keep file in its current folder
+		// (don't move to root, which was the old behavior)
+		return file.parent?.path || '';
 	}
 
 	return resolveTagPath(plugin.tagIndex, effectiveFirstTag);
@@ -794,10 +798,30 @@ async function handleFolderCreation(plugin: TaggableTagsPlugin, folder: TFolder)
 /**
  * Create a tag file for a folder.
  * Sets up parent relationship based on folder hierarchy.
+ * If a file with a matching name exists in the folder, converts it to a tag file instead of creating a new one.
  */
 async function createTagFileForFolder(plugin: TaggableTagsPlugin, folder: TFolder): Promise<void> {
 	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
 	if (!tagName) return;
+
+	// Check if tag file already exists in the index
+	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
+	if (existingTagFile) {
+		return;
+	}
+
+	// Determine parent tag from folder hierarchy
+	const parentFolder = folder.parent;
+	const parentTag = parentFolder ? plugin.tagIndex.getTagFromFolderPath(parentFolder.path) : null;
+
+	// Check for existing file with matching name in this folder that can be converted
+	const matchingFile = findMatchingFileInFolder(plugin, folder, tagName);
+	if (matchingFile) {
+		// Convert existing file to tag note by adding tag properties
+		await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
+		plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
+		return;
+	}
 
 	// Determine where to create the tag file
 	let tagFilePath: string;
@@ -809,15 +833,11 @@ async function createTagFileForFolder(plugin: TaggableTagsPlugin, folder: TFolde
 		tagFilePath = normalizePath(`${folder.path}/${tagName}.md`);
 	}
 
-	// Check if file already exists
+	// Check if file already exists at the target path
 	const existingFile = plugin.app.vault.getAbstractFileByPath(tagFilePath);
 	if (existingFile) {
 		return;
 	}
-
-	// Determine parent tag from folder hierarchy
-	const parentFolder = folder.parent;
-	const parentTag = parentFolder ? plugin.tagIndex.getTagFromFolderPath(parentFolder.path) : null;
 
 	// Create the tag file content using the template utility
 	const content = await generateTagFileContent(plugin, tagName, parentTag);
@@ -830,6 +850,211 @@ async function createTagFileForFolder(plugin: TaggableTagsPlugin, folder: TFolde
 	} catch (error) {
 		// Ignore errors - file might already exist
 	}
+}
+
+/**
+ * Find a file in a folder with a name matching the tag name.
+ * Used to convert existing files to tag notes instead of creating new ones.
+ */
+function findMatchingFileInFolder(plugin: TaggableTagsPlugin, folder: TFolder, tagName: string): TFile | null {
+	for (const child of folder.children) {
+		if (!(child instanceof TFile) || child.extension !== 'md') continue;
+		
+		// Skip files that are already tag files
+		if (plugin.tagIndex.isTagFile(child)) continue;
+		
+		// Check if basename matches folder/tag name (using normalized comparison)
+		if (namesMatch(child.basename, tagName)) {
+			return child;
+		}
+	}
+	return null;
+}
+
+// ============================================================================
+// Ensure Files Have Folder Tags
+// ============================================================================
+
+/**
+ * Ensure all files in folders have their folder's tag.
+ * This is used during migration to add folder tags to files that are missing them.
+ * Files at vault root are skipped (they remain untagged).
+ * 
+ * @returns Object with counts of files processed and tags added
+ */
+export async function ensureFilesHaveFolderTags(plugin: TaggableTagsPlugin): Promise<{ filesProcessed: number; tagsAdded: number }> {
+	const files = plugin.app.vault.getMarkdownFiles();
+	let filesProcessed = 0;
+	let tagsAdded = 0;
+	
+	for (const file of files) {
+		// Skip files in excluded folders
+		if (isInExcludedFolder(plugin, file)) continue;
+		
+		// Skip tag files - they have special handling
+		if (plugin.tagIndex.isTagFile(file)) continue;
+		
+		// Skip the tag registry note
+		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
+		
+		// Skip files at vault root (no folder = no folder tag to add)
+		if (!file.parent || file.parent.isRoot()) continue;
+		
+		// Get the folder's tag
+		const folderTag = plugin.tagIndex.getTagFromFolderPath(file.parent.path);
+		if (!folderTag || isExcludedTag(plugin, folderTag)) continue;
+		
+		// Check if file already has this tag
+		const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
+		const normalizedFolderTag = plugin.tagIndex.normalizeTag(folderTag);
+		const hasTag = currentTags.some(t => plugin.tagIndex.normalizeTag(t) === normalizedFolderTag);
+		
+		filesProcessed++;
+		
+		if (!hasTag) {
+			// File is in folder but missing folder's tag - add it as first tag
+			await setFirstTag(plugin, file, folderTag);
+			tagsAdded++;
+			// Small delay to avoid overwhelming the system
+			await sleep(20);
+		}
+	}
+	
+	return { filesProcessed, tagsAdded };
+}
+
+/**
+ * Preview what ensureFilesHaveFolderTags would do without making changes.
+ * Used by the migration wizard to show what will happen.
+ */
+export function previewFilesNeedingFolderTags(plugin: TaggableTagsPlugin): Array<{ file: TFile; folderTag: string }> {
+	const files = plugin.app.vault.getMarkdownFiles();
+	const result: Array<{ file: TFile; folderTag: string }> = [];
+	
+	for (const file of files) {
+		// Skip files in excluded folders
+		if (isInExcludedFolder(plugin, file)) continue;
+		
+		// Skip tag files
+		if (plugin.tagIndex.isTagFile(file)) continue;
+		
+		// Skip the tag registry note
+		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
+		
+		// Skip files at vault root
+		if (!file.parent || file.parent.isRoot()) continue;
+		
+		// Get the folder's tag
+		const folderTag = plugin.tagIndex.getTagFromFolderPath(file.parent.path);
+		if (!folderTag || isExcludedTag(plugin, folderTag)) continue;
+		
+		// Check if file already has this tag
+		const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
+		const normalizedFolderTag = plugin.tagIndex.normalizeTag(folderTag);
+		const hasTag = currentTags.some(t => plugin.tagIndex.normalizeTag(t) === normalizedFolderTag);
+		
+		if (!hasTag) {
+			result.push({ file, folderTag });
+		}
+	}
+	
+	return result;
+}
+
+// ============================================================================
+// Empty Folder Cleanup
+// ============================================================================
+
+/**
+ * Clean up empty folders after sync operations.
+ * Only runs if the deleteEmptyFoldersAfterSync setting is enabled.
+ * 
+ * @returns Number of folders deleted
+ */
+export async function cleanupEmptyFolders(plugin: TaggableTagsPlugin): Promise<number> {
+	if (!plugin.settings.deleteEmptyFoldersAfterSync) {
+		return 0;
+	}
+	
+	const excludedFolders = plugin.settings.excludedFoldersFromSync;
+	return await deleteEmptyFolders(plugin, excludedFolders);
+}
+
+/**
+ * Preview which folders would be deleted as empty.
+ * Does not modify anything.
+ */
+export function previewEmptyFolders(plugin: TaggableTagsPlugin): TFolder[] {
+	const excludedFolders = plugin.settings.excludedFoldersFromSync;
+	const emptyFolders: TFolder[] = [];
+	
+	// Get all folders sorted by depth (deepest first)
+	const folders = getAllFoldersSortedByDepth(plugin);
+	
+	// Track which folders would be deleted (for cascading empty detection)
+	const wouldBeDeleted = new Set<string>();
+	
+	for (const folder of folders) {
+		if (folder.isRoot()) continue;
+		
+		// Skip excluded folders and their parents
+		if (isExcludedOrParentOfExcluded(folder.path, excludedFolders)) continue;
+		
+		// Check if folder would be empty (considering folders that would be deleted)
+		const effectiveChildren = folder.children.filter(child => {
+			if (child instanceof TFolder) {
+				return !wouldBeDeleted.has(child.path);
+			}
+			return true; // Files count as children
+		});
+		
+		if (effectiveChildren.length === 0) {
+			emptyFolders.push(folder);
+			wouldBeDeleted.add(folder.path);
+		}
+	}
+	
+	return emptyFolders;
+}
+
+/**
+ * Gets all folders sorted by depth (deepest first).
+ */
+function getAllFoldersSortedByDepth(plugin: TaggableTagsPlugin): TFolder[] {
+	const folders: TFolder[] = [];
+	
+	function collectFolders(folder: TFolder): void {
+		folders.push(folder);
+		for (const child of folder.children) {
+			if (child instanceof TFolder) {
+				collectFolders(child);
+			}
+		}
+	}
+
+	const root = plugin.app.vault.getRoot();
+	collectFolders(root);
+
+	// Sort by depth (deepest first)
+	folders.sort((a, b) => {
+		const depthA = a.path.split('/').length;
+		const depthB = b.path.split('/').length;
+		return depthB - depthA;
+	});
+
+	return folders;
+}
+
+/**
+ * Checks if a folder path is excluded or is a parent of an excluded folder.
+ */
+function isExcludedOrParentOfExcluded(folderPath: string, excludedFolders: string[]): boolean {
+	for (const excludedFolder of excludedFolders) {
+		if (folderPath === excludedFolder) return true;
+		if (folderPath.startsWith(excludedFolder + '/')) return true;
+		if (excludedFolder.startsWith(folderPath + '/')) return true;
+	}
+	return false;
 }
 
 // ============================================================================

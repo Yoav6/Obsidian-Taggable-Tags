@@ -198,11 +198,17 @@ function generateDefaultContent(
 /**
  * Add required tag properties to an existing file's frontmatter.
  * Used when converting an existing file to a tag file.
+ * 
+ * @param plugin The plugin instance
+ * @param file The file to modify
+ * @param tagName The tag name to set
+ * @param parentTag Optional parent tag to add to the tags array
  */
 export async function addTagPropertiesToFile(
 	plugin: TaggableTagsPlugin,
 	file: TFile,
-	tagName: string
+	tagName: string,
+	parentTag?: string | null
 ): Promise<void> {
 	const propName = plugin.settings.tagPropertyName;
 	const exceptionPropName = plugin.settings.exceptionToPropertyName;
@@ -214,8 +220,21 @@ export async function addTagPropertiesToFile(
 	const requiredProps: Record<string, unknown> = {};
 	requiredProps[propName] = tagName;
 	
+	// Handle tags array - may need to add parent tag
 	if (!frontmatter || !('tags' in frontmatter)) {
-		requiredProps['tags'] = [];
+		requiredProps['tags'] = parentTag ? [parentTag] : [];
+	} else if (parentTag) {
+		// Existing tags array - add parent if not already present
+		const existingTags = Array.isArray(frontmatter.tags) ? frontmatter.tags : [];
+		const normalizedParent = plugin.settings.forceLowercase ? parentTag.toLowerCase() : parentTag;
+		const hasParent = existingTags.some((t: unknown) => {
+			if (typeof t !== 'string') return false;
+			const normalizedT = plugin.settings.forceLowercase ? t.toLowerCase() : t;
+			return normalizedT === normalizedParent;
+		});
+		if (!hasParent) {
+			requiredProps['tags'] = [parentTag, ...existingTags];
+		}
 	}
 	
 	if (!frontmatter || !(exceptionPropName in frontmatter)) {

@@ -1,6 +1,7 @@
 import { TFile, Notice } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import { generateTagFileContent } from '../utils/tag-template';
+import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
+import { namesMatch } from '../utils/name-matching';
 
 /**
  * Information about a nested tag found in the vault.
@@ -197,28 +198,38 @@ function collectAllTagLevels(
 
 /**
  * Creates a tag file for the given tag if it doesn't already exist.
- * Returns true if a new file was created.
+ * If a file with matching name exists, converts it to a tag file instead.
+ * Returns true if a new file was created or an existing file was converted.
  */
 async function createTagFileIfNeeded(
 	plugin: TaggableTagsPlugin,
 	tagName: string,
 	parentTag: string | null
 ): Promise<boolean> {
-	// Check if tag file already exists
-	const existingFile = plugin.tagIndex.getTagFile(tagName);
-	if (existingFile) {
+	// Check if tag file already exists in the index
+	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
+	if (existingTagFile) {
 		// Tag file exists - check if we need to add the parent relationship
 		if (parentTag) {
-			await ensureParentRelationship(plugin, existingFile, parentTag);
+			await ensureParentRelationship(plugin, existingTagFile, parentTag);
 		}
 		return false;
+	}
+
+	// Check if a file with matching name exists that can be converted
+	const matchingFile = findMatchingFileForTag(plugin, tagName);
+	if (matchingFile) {
+		// Convert existing file to tag note by adding tag properties
+		await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
+		plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
+		return true;
 	}
 
 	// Create new tag file
 	const sanitizedTagName = plugin.tagIndex.sanitizeTagName(tagName);
 	const filePath = `${sanitizedTagName}.md`;
 
-	// Check if file already exists at the path
+	// Check if file already exists at the path (shouldn't happen after matchingFile check, but safety first)
 	const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
 	if (existingFileAtPath) {
 		return false;
@@ -232,6 +243,28 @@ async function createTagFileIfNeeded(
 	plugin.tagIndex.onTagFileCreated(file, tagName);
 
 	return true;
+}
+
+/**
+ * Find a file in the vault with a name matching the tag name.
+ * Used to convert existing files to tag notes instead of creating new ones.
+ */
+function findMatchingFileForTag(plugin: TaggableTagsPlugin, tagName: string): TFile | null {
+	const files = plugin.app.vault.getMarkdownFiles();
+	
+	for (const file of files) {
+		// Skip files that are already tag files
+		if (plugin.tagIndex.isTagFile(file)) continue;
+		
+		// Skip the tag registry note
+		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
+		
+		// Check if basename matches tag name (using normalized comparison)
+		if (namesMatch(file.basename, tagName)) {
+			return file;
+		}
+	}
+	return null;
 }
 
 /**

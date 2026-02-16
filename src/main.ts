@@ -11,6 +11,7 @@ import { setupTagClickNavigation } from './ui/tag-click-navigation';
 import { showRearrangeTagsModal } from './ui/rearrange-tags-modal';
 import { flattenNestedTags } from './commands/flatten-nested-tags';
 import { flattenFileStructure } from './commands/flatten-file-structure';
+import { migrateVault } from './commands/migrate-vault';
 
 export default class TaggableTagsPlugin extends Plugin {
 	settings: TaggableTagsSettings;
@@ -42,6 +43,12 @@ export default class TaggableTagsPlugin extends Plugin {
 			id: 'flatten-file-structure',
 			name: 'Utility: flatten file structure (vault-wide)',
 			callback: () => flattenFileStructure(this),
+		});
+
+		this.addCommand({
+			id: 'migrate-vault',
+			name: 'Migrate vault to Taggable Tags',
+			callback: () => migrateVault(this),
 		});
 		
 		// Wait for layout to be ready before initializing

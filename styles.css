@@ -84,3 +84,127 @@ If your plugin does not need CSS, delete this file.
 	justify-content: flex-end;
 	gap: 0.5em;
 }
+
+/* Migration modal styles */
+.taggable-tags-backup-modal,
+.taggable-tags-migration-settings-modal,
+.taggable-tags-migration-preview-modal {
+	max-width: 600px;
+}
+
+.taggable-tags-warning {
+	background-color: var(--background-modifier-error);
+	padding: 1em;
+	border-radius: var(--radius-m);
+	margin: 1em 0;
+}
+
+.taggable-tags-warning ul {
+	margin: 0.5em 0 0.5em 1.5em;
+	padding: 0;
+}
+
+.taggable-tags-warning-emphasis {
+	font-weight: var(--font-semibold);
+	margin-top: 1em;
+	margin-bottom: 0;
+}
+
+.taggable-tags-modal-description {
+	color: var(--text-muted);
+	margin-bottom: 1em;
+}
+
+.taggable-tags-info {
+	background-color: var(--background-secondary);
+	padding: 1em;
+	border-radius: var(--radius-m);
+	margin: 1.5em 0;
+}
+
+.taggable-tags-info h4 {
+	margin: 0 0 0.5em 0;
+	font-size: var(--font-ui-small);
+}
+
+.taggable-tags-info p {
+	margin: 0.5em 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.taggable-tags-info ul {
+	margin: 0.5em 0 0.5em 1.5em;
+	padding: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.taggable-tags-button-container {
+	margin-top: 1.5em;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 1em;
+}
+
+.taggable-tags-button-container .setting-item {
+	border-top: none;
+	padding-top: 0;
+}
+
+.taggable-tags-button-container .setting-item-control {
+	justify-content: flex-end;
+	gap: 0.5em;
+}
+
+.taggable-tags-no-changes {
+	color: var(--text-success);
+	font-style: italic;
+}
+
+.taggable-tags-summary {
+	font-weight: var(--font-semibold);
+}
+
+.taggable-tags-changes-container {
+	max-height: 400px;
+	overflow-y: auto;
+	margin: 1em 0;
+	padding-right: 0.5em;
+}
+
+.taggable-tags-preview-section {
+	margin-bottom: 1.5em;
+}
+
+.taggable-tags-preview-section-header {
+	margin: 0 0 0.5em 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-accent);
+}
+
+.taggable-tags-preview-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	font-size: var(--font-ui-smaller);
+}
+
+.taggable-tags-preview-list li {
+	padding: 0.25em 0.5em;
+	margin: 0.125em 0;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+}
+
+.taggable-tags-preview-primary {
+	font-family: var(--font-monospace);
+}
+
+.taggable-tags-preview-secondary {
+	color: var(--text-muted);
+}
+
+.taggable-tags-preview-more {
+	font-style: italic;
+	color: var(--text-muted);
+}

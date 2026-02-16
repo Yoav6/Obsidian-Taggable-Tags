@@ -78,6 +78,106 @@ export async function reorderTags(plugin: TaggableTagsPlugin, file: TFile, newFi
 }
 
 /**
+ * Remove redundant parent tags from a file.
+ * A parent tag is redundant if the file also has a child tag (the child implies the parent).
+ * For example, if a file has both "cooking" and "recipes" where recipes is a child of cooking,
+ * the "cooking" tag is redundant and will be removed.
+ * 
+ * @param plugin The plugin instance
+ * @param file The file to check and modify
+ * @returns Array of tags that were removed
+ */
+export async function removeRedundantParentTags(
+	plugin: TaggableTagsPlugin,
+	file: TFile
+): Promise<string[]> {
+	const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
+	if (currentTags.length < 2) return []; // Need at least 2 tags for redundancy
+	
+	const redundantTags: string[] = [];
+	
+	// For each tag, check if any other tag in the file is a child of it
+	for (const tag of currentTags) {
+		const normalizedTag = plugin.tagIndex.normalizeTag(tag);
+		
+		for (const otherTag of currentTags) {
+			if (otherTag === tag) continue;
+			
+			// Check if otherTag has this tag as a parent (directly or indirectly)
+			if (isAncestorOf(plugin, normalizedTag, otherTag)) {
+				redundantTags.push(tag);
+				break;
+			}
+		}
+	}
+	
+	// Remove the redundant tags
+	for (const tag of redundantTags) {
+		await removeTag(plugin, file, tag);
+	}
+	
+	return redundantTags;
+}
+
+/**
+ * Check if ancestorTag is an ancestor (parent, grandparent, etc.) of descendantTag.
+ */
+function isAncestorOf(plugin: TaggableTagsPlugin, ancestorTag: string, descendantTag: string): boolean {
+	const normalizedAncestor = plugin.tagIndex.normalizeTag(ancestorTag);
+	const visited = new Set<string>();
+	let currentTag = plugin.tagIndex.normalizeTag(descendantTag);
+	
+	while (currentTag) {
+		if (visited.has(currentTag)) {
+			// Circular reference - stop
+			break;
+		}
+		visited.add(currentTag);
+		
+		const parents = plugin.tagIndex.getParentTags(currentTag);
+		if (parents.length === 0) break;
+		
+		// Check if any parent is the ancestor we're looking for
+		for (const parent of parents) {
+			if (plugin.tagIndex.normalizeTag(parent) === normalizedAncestor) {
+				return true;
+			}
+		}
+		
+		// Move up to the first parent (for simplicity, we follow the primary parent chain)
+		currentTag = parents[0];
+	}
+	
+	return false;
+}
+
+/**
+ * Preview which tags would be removed as redundant from a file.
+ * Does not modify the file.
+ */
+export function previewRedundantParentTags(plugin: TaggableTagsPlugin, file: TFile): string[] {
+	const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
+	if (currentTags.length < 2) return [];
+	
+	const redundantTags: string[] = [];
+	
+	for (const tag of currentTags) {
+		const normalizedTag = plugin.tagIndex.normalizeTag(tag);
+		
+		for (const otherTag of currentTags) {
+			if (otherTag === tag) continue;
+			
+			if (isAncestorOf(plugin, normalizedTag, otherTag)) {
+				redundantTags.push(tag);
+				break;
+			}
+		}
+	}
+	
+	return redundantTags;
+}
+
+/**
  * Remove a specific tag from a file's frontmatter.
  * 
  * @param plugin The plugin instance

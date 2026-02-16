@@ -29,6 +29,8 @@ export interface TaggableTagsSettings {
 	tagFilesFolderPath: string;             // Path for dedicated tag files folder (e.g., "_tags")
 	excludedTagsFromFolderSync: string[];   // Tags to exclude from sync
 	excludedFoldersFromSync: string[];      // Folders to exclude from sync
+	removeRedundantParentTags: boolean;     // Auto-remove parent tags when child tag is present
+	deleteEmptyFoldersAfterSync: boolean;   // Delete folders that become empty after sync
 	// Tag creation settings
 	tagTemplateFile: string;                // Path to template file for new tags (empty = use default)
 	existingFileBehavior: ExistingFileBehavior;  // What to do when a file with matching name exists
@@ -59,6 +61,8 @@ export const DEFAULT_SETTINGS: TaggableTagsSettings = {
 	tagFilesFolderPath: '_tags',
 	excludedTagsFromFolderSync: [],
 	excludedFoldersFromSync: [],
+	removeRedundantParentTags: true,
+	deleteEmptyFoldersAfterSync: false,
 	// Tag creation defaults
 	tagTemplateFile: '',
 	existingFileBehavior: 'ask',
@@ -299,6 +303,26 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 							.split(',')
 							.map(f => f.trim())
 							.filter(f => f.length > 0);
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(containerEl)
+				.setName('Remove redundant parent tags')
+				.setDesc('When a file has both a tag and its parent (e.g., "cooking" and "recipes" where recipes is a child of cooking), automatically remove the parent tag since it\'s implied.')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.removeRedundantParentTags)
+					.onChange(async (value) => {
+						this.plugin.settings.removeRedundantParentTags = value;
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(containerEl)
+				.setName('Delete empty folders after sync')
+				.setDesc('Automatically delete folders that become empty after files are moved during sync.')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.deleteEmptyFoldersAfterSync)
+					.onChange(async (value) => {
+						this.plugin.settings.deleteEmptyFoldersAfterSync = value;
 						await this.plugin.saveSettings();
 					}));
 		}
