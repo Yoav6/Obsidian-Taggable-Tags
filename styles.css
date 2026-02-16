@@ -270,6 +270,12 @@ If your plugin does not need CSS, delete this file.
 	white-space: nowrap;
 }
 
+.taggable-tags-conflict-extra {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	flex-shrink: 0;
+}
+
 .taggable-tags-conflict-item-right {
 	display: flex;
 	align-items: center;
@@ -416,4 +422,58 @@ If your plugin does not need CSS, delete this file.
 .taggable-tags-progress-step-skipped {
 	color: var(--text-muted);
 	text-decoration: line-through;
+}
+
+/* Circular tags modal styles */
+.taggable-tags-circular-modal {
+	max-width: 600px;
+}
+
+.taggable-tags-circular-section {
+	margin: 1.5em 0;
+}
+
+.taggable-tags-circular-section h4 {
+	margin: 0 0 0.5em 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-accent);
+}
+
+.taggable-tags-circular-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.taggable-tags-circular-list li {
+	padding: 0.5em 0.75em;
+	margin: 0.25em 0;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+}
+
+.taggable-tags-circular-tag-link {
+	color: var(--text-accent);
+	cursor: pointer;
+	text-decoration: none;
+}
+
+.taggable-tags-circular-tag-link:hover {
+	text-decoration: underline;
+}
+
+.taggable-tags-circular-info {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-left: 0.5em;
+}
+
+.taggable-tags-cycle {
+	padding: 0.5em 0.75em;
+	margin: 0.25em 0;
+	background-color: var(--background-secondary);
+	border-left: 3px solid var(--text-accent);
+	border-radius: var(--radius-s);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
 }

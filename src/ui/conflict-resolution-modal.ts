@@ -1,9 +1,10 @@
-import { Modal, Setting, TFile, TFolder } from 'obsidian';
+import { Modal, Setting } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { 
 	ConflictDetectionResult, 
 	NamingConflict, 
 	ConflictResolution,
+	TagSource,
 	countRenames 
 } from '../migration/conflict-detector';
 
@@ -52,14 +53,14 @@ export class ConflictResolutionModal extends Modal {
 		const renameCount = countRenames(this.editableResolutions);
 		
 		contentEl.createEl('p', {
-			text: `Found ${this.detectionResult.conflicts.length} naming conflict${this.detectionResult.conflicts.length === 1 ? '' : 's'} that could create circular relationships. ${renameCount} item${renameCount === 1 ? '' : 's'} will be renamed.`,
+			text: `Found ${this.detectionResult.conflicts.length} naming conflict${this.detectionResult.conflicts.length === 1 ? '' : 's'} that could create issues. ${renameCount} item${renameCount === 1 ? '' : 's'} will be renamed.`,
 			cls: 'taggable-tags-modal-description',
 		});
 
 		// Warning about why this matters
 		const warningDiv = contentEl.createDiv({ cls: 'taggable-tags-warning' });
 		warningDiv.createEl('p', {
-			text: 'When multiple folders share the same name, they would all become the same tag, potentially creating circular parent-child relationships. Renaming ensures each folder becomes a unique tag.',
+			text: 'Multiple sources would create the same tag name. This could cause confusion or circular relationships. Renaming ensures each source creates a unique tag.',
 		});
 
 		// Scrollable container for conflicts
@@ -97,8 +98,18 @@ export class ConflictResolutionModal extends Modal {
 	private renderConflict(container: HTMLElement, conflict: NamingConflict): void {
 		const section = container.createDiv({ cls: 'taggable-tags-conflict-section' });
 		
+		// Count sources by type
+		const folderCount = conflict.sources.filter(s => s.type === 'folder').length;
+		const tagCount = conflict.sources.filter(s => s.type === 'existing-tag').length;
+		const nestedCount = conflict.sources.filter(s => s.type === 'nested-tag').length;
+		
+		const parts: string[] = [];
+		if (folderCount > 0) parts.push(`${folderCount} folder${folderCount === 1 ? '' : 's'}`);
+		if (tagCount > 0) parts.push(`${tagCount} tag file${tagCount === 1 ? '' : 's'}`);
+		if (nestedCount > 0) parts.push(`${nestedCount} nested tag${nestedCount === 1 ? '' : 's'}`);
+		
 		section.createEl('h4', { 
-			text: `"${conflict.name}" (${conflict.folders.length} folder${conflict.folders.length === 1 ? '' : 's'}${conflict.files.length > 0 ? `, ${conflict.files.length} file${conflict.files.length === 1 ? '' : 's'}` : ''})`,
+			text: `"${conflict.name}" (${parts.join(', ')})`,
 			cls: 'taggable-tags-conflict-header',
 		});
 
@@ -106,25 +117,32 @@ export class ConflictResolutionModal extends Modal {
 		const list = section.createEl('div', { cls: 'taggable-tags-conflict-list' });
 
 		for (const resolution of resolutions) {
-			this.renderResolution(list, conflict, resolution);
+			this.renderResolution(list, resolution);
 		}
 	}
 
 	private renderResolution(
 		container: HTMLElement, 
-		conflict: NamingConflict,
 		resolution: ConflictResolution
 	): void {
 		const item = container.createDiv({ cls: 'taggable-tags-conflict-item' });
 		
-		const isFolder = resolution.original instanceof TFolder;
-		const icon = isFolder ? '📁' : '📄';
-		const originalPath = resolution.original.path;
+		const source = resolution.source;
+		const icon = this.getSourceIcon(source);
+		const path = this.getSourcePath(source);
 		
-		// Left side: original path and icon
+		// Left side: icon and path
 		const leftSide = item.createDiv({ cls: 'taggable-tags-conflict-item-left' });
 		leftSide.createSpan({ text: icon, cls: 'taggable-tags-conflict-icon' });
-		leftSide.createSpan({ text: originalPath, cls: 'taggable-tags-conflict-path' });
+		leftSide.createSpan({ text: path, cls: 'taggable-tags-conflict-path' });
+		
+		// Show matching file info for folders
+		if (source.type === 'folder' && source.matchingFile) {
+			leftSide.createSpan({ 
+				text: ` (+ ${source.matchingFile.name})`, 
+				cls: 'taggable-tags-conflict-extra',
+			});
+		}
 		
 		// Right side: new name (editable if being renamed)
 		const rightSide = item.createDiv({ cls: 'taggable-tags-conflict-item-right' });
@@ -147,6 +165,24 @@ export class ConflictResolutionModal extends Modal {
 			input.addEventListener('change', () => {
 				resolution.newName = input.value.trim() || resolution.newName;
 			});
+		}
+	}
+
+	private getSourceIcon(source: TagSource): string {
+		switch (source.type) {
+			case 'folder': return '📁';
+			case 'existing-tag': return '🏷️';
+			case 'nested-tag': return '#';
+			default: return '?';
+		}
+	}
+
+	private getSourcePath(source: TagSource): string {
+		switch (source.type) {
+			case 'folder': return source.folder?.path || 'unknown';
+			case 'existing-tag': return source.existingTagFile?.path || 'unknown';
+			case 'nested-tag': return source.nestedTagPath || 'unknown';
+			default: return 'unknown';
 		}
 	}
 

@@ -101,7 +101,7 @@ export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
 	
 	// Step 3: Detect naming conflicts
 	new Notice('Detecting naming conflicts...');
-	const conflictResult = detectNamingConflicts(plugin);
+	const conflictResult = detectNamingConflicts(plugin, migrationSettings.flattenNestedTags);
 	
 	let resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null = null;
 	

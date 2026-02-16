@@ -12,6 +12,7 @@ import { showRearrangeTagsModal } from './ui/rearrange-tags-modal';
 import { flattenNestedTags } from './commands/flatten-nested-tags';
 import { flattenFileStructure } from './commands/flatten-file-structure';
 import { migrateVault } from './commands/migrate-vault';
+import { findCircularTags } from './commands/find-circular-tags';
 
 export default class TaggableTagsPlugin extends Plugin {
 	settings: TaggableTagsSettings;
@@ -49,6 +50,12 @@ export default class TaggableTagsPlugin extends Plugin {
 			id: 'migrate-vault',
 			name: 'Migrate vault to Taggable Tags',
 			callback: () => migrateVault(this),
+		});
+
+		this.addCommand({
+			id: 'find-circular-tags',
+			name: 'Utility: find circular tag relationships',
+			callback: () => findCircularTags(this),
 		});
 		
 		// Wait for layout to be ready before initializing
