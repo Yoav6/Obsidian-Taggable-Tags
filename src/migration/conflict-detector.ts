@@ -277,8 +277,9 @@ function addSource(
  * 
  * Rules:
  * - A folder containing an existing tag file for the same name = 1 source (existing tag wins)
- * - A folder with a matching file inside = 1 source (the folder)
+ * - A folder with a matching file inside (that will become a tag file) = 1 source (the folder)
  * - Multiple nested tags with the same leaf name = 1 source (any one of them)
+ * - If a folder's matching file IS an existing tag file, they're the same source
  */
 function deduplicateSources(sources: TagSource[]): TagSource[] {
 	const folders = sources.filter(s => s.type === 'folder');
@@ -287,22 +288,43 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 	
 	const result: TagSource[] = [];
 	const mergedFolderPaths = new Set<string>();
+	const mergedTagFilePaths = new Set<string>();
 	
-	// Check each existing tag - does it belong to a folder in our list?
-	for (const tag of existingTags) {
-		const tagFile = tag.existingTagFile!;
-		const parentFolder = tagFile.parent;
+	// Check each folder - does it have a matching file that's already a tag file?
+	for (const folder of folders) {
+		if (!folder.folder) continue;
 		
-		// Find if this tag file is inside one of the conflicting folders
-		const matchingFolder = folders.find(f => 
-			f.folder && parentFolder && f.folder.path === parentFolder.path
-		);
-		
-		if (matchingFolder) {
-			// Merge: existing tag + folder = one source (the existing tag wins)
-			mergedFolderPaths.add(matchingFolder.folder!.path);
+		// Check if this folder's matching file is already an existing tag file
+		if (folder.matchingFile) {
+			const matchingTagSource = existingTags.find(t => 
+				t.existingTagFile && t.existingTagFile.path === folder.matchingFile!.path
+			);
+			
+			if (matchingTagSource) {
+				// The folder's matching file IS an existing tag file
+				// This is one unified source - the existing tag wins representation
+				mergedFolderPaths.add(folder.folder.path);
+				// Don't mark the tag as merged - we'll add it later
+				continue;
+			}
 		}
 		
+		// Check if there's an existing tag file inside this folder (but not the matching file)
+		const tagFileInFolder = existingTags.find(t => {
+			if (!t.existingTagFile) return false;
+			const parentFolder = t.existingTagFile.parent;
+			return parentFolder && parentFolder.path === folder.folder!.path;
+		});
+		
+		if (tagFileInFolder) {
+			// Merge: existing tag file in folder = one source (existing tag wins)
+			mergedFolderPaths.add(folder.folder.path);
+			continue;
+		}
+	}
+	
+	// Add existing tags (they weren't filtered out)
+	for (const tag of existingTags) {
 		result.push(tag);
 	}
 	

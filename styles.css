@@ -424,6 +424,38 @@ If your plugin does not need CSS, delete this file.
 	text-decoration: line-through;
 }
 
+.taggable-tags-progress-step-completed_with_errors {
+	color: var(--text-warning);
+}
+
+.taggable-tags-progress-warning {
+	color: var(--text-warning);
+}
+
+.taggable-tags-progress-error-info {
+	margin: 1em 0;
+	padding: 0.75em 1em;
+	background-color: rgba(var(--color-yellow-rgb), 0.1);
+	border-left: 3px solid var(--text-warning);
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-small);
+}
+
+.taggable-tags-progress-error-info p {
+	margin: 0.5em 0;
+}
+
+.taggable-tags-error-note-link {
+	display: block;
+	font-family: var(--font-monospace);
+	padding: 0.25em 0;
+}
+
+.taggable-tags-error-note-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
 /* Circular tags modal styles */
 .taggable-tags-circular-modal {
 	max-width: 600px;
