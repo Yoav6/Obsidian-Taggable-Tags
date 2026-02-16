@@ -93,8 +93,8 @@ If your plugin does not need CSS, delete this file.
 }
 
 .taggable-tags-warning {
-	background-color: var(--background-secondary);
-	border-left: 4px solid var(--text-warning);
+	background-color: rgba(var(--color-red-rgb), 0.1);
+	border-left: 4px solid var(--text-error);
 	padding: 1em;
 	border-radius: var(--radius-m);
 	margin: 1em 0;
@@ -208,4 +208,212 @@ If your plugin does not need CSS, delete this file.
 .taggable-tags-preview-more {
 	font-style: italic;
 	color: var(--text-muted);
+}
+
+/* Conflict resolution modal styles */
+.taggable-tags-conflict-modal {
+	max-width: 700px;
+}
+
+.taggable-tags-conflicts-container {
+	max-height: 400px;
+	overflow-y: auto;
+	margin: 1em 0;
+}
+
+.taggable-tags-conflict-section {
+	margin-bottom: 1.5em;
+	padding: 1em;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+}
+
+.taggable-tags-conflict-header {
+	margin: 0 0 0.75em 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-accent);
+}
+
+.taggable-tags-conflict-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+}
+
+.taggable-tags-conflict-item {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 0.5em 0.75em;
+	background-color: var(--background-primary);
+	border-radius: var(--radius-s);
+	gap: 1em;
+}
+
+.taggable-tags-conflict-item-left {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	flex: 1;
+	min-width: 0;
+}
+
+.taggable-tags-conflict-icon {
+	flex-shrink: 0;
+}
+
+.taggable-tags-conflict-path {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.taggable-tags-conflict-item-right {
+	display: flex;
+	align-items: center;
+	gap: 0.25em;
+	flex-shrink: 0;
+}
+
+.taggable-tags-conflict-keeps {
+	color: var(--text-success);
+	font-size: var(--font-ui-smaller);
+}
+
+.taggable-tags-conflict-arrow {
+	color: var(--text-muted);
+}
+
+.taggable-tags-conflict-input {
+	width: 150px;
+	padding: 0.25em 0.5em;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-primary);
+}
+
+/* Empty folders modal styles */
+.taggable-tags-empty-folders-modal {
+	max-width: 600px;
+}
+
+.taggable-tags-bulk-actions {
+	margin-bottom: 1em;
+	padding: 0.75em;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+}
+
+.taggable-tags-bulk-actions .setting-item {
+	border-top: none;
+	padding-top: 0;
+}
+
+.taggable-tags-bulk-actions .setting-item-control {
+	gap: 0.5em;
+}
+
+.taggable-tags-empty-folders-container {
+	max-height: 350px;
+	overflow-y: auto;
+	margin: 1em 0;
+}
+
+.taggable-tags-empty-folder-row {
+	display: flex;
+	align-items: center;
+	padding: 0.5em 0.75em;
+	margin: 0.25em 0;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+	gap: 0.5em;
+}
+
+.taggable-tags-folder-icon {
+	flex-shrink: 0;
+}
+
+.taggable-tags-folder-path {
+	flex: 1;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.taggable-tags-folder-action {
+	flex-shrink: 0;
+	padding: 0.25em 0.5em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-primary);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Migration progress modal styles */
+.taggable-tags-progress-modal {
+	max-width: 500px;
+}
+
+.taggable-tags-progress-status {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	margin: 1em 0;
+	color: var(--text-accent);
+}
+
+.taggable-tags-progress-status.taggable-tags-progress-complete {
+	color: var(--text-success);
+}
+
+.taggable-tags-progress-steps {
+	margin: 1.5em 0;
+	padding: 1em;
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-m);
+}
+
+.taggable-tags-progress-step {
+	display: flex;
+	align-items: center;
+	gap: 0.75em;
+	padding: 0.5em 0;
+	font-size: var(--font-ui-small);
+}
+
+.taggable-tags-progress-icon {
+	width: 1.5em;
+	text-align: center;
+	font-weight: var(--font-semibold);
+}
+
+.taggable-tags-progress-step-pending {
+	color: var(--text-muted);
+}
+
+.taggable-tags-progress-step-in_progress {
+	color: var(--text-accent);
+}
+
+.taggable-tags-progress-step-in_progress .taggable-tags-progress-icon {
+	animation: taggable-tags-spin 1s linear infinite;
+}
+
+@keyframes taggable-tags-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.taggable-tags-progress-step-completed {
+	color: var(--text-success);
+}
+
+.taggable-tags-progress-step-skipped {
+	color: var(--text-muted);
+	text-decoration: line-through;
 }

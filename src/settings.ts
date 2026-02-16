@@ -6,6 +6,7 @@ import { syncEntireVault } from './sync/folder-sync';
 export type TagClickBehavior = 'replace' | 'add' | 'default';
 export type FolderTagBehavior = 'ask' | 'always' | 'never';
 export type ExistingFileBehavior = 'ask' | 'auto' | 'off';
+export type EmptyFolderBehavior = 'delete' | 'create-tag' | 'ask' | 'nothing';
 
 export interface TaggableTagsSettings {
 	autoCreateFiles: boolean;
@@ -30,7 +31,7 @@ export interface TaggableTagsSettings {
 	excludedTagsFromFolderSync: string[];   // Tags to exclude from sync
 	excludedFoldersFromSync: string[];      // Folders to exclude from sync
 	removeRedundantParentTags: boolean;     // Auto-remove parent tags when child tag is present
-	deleteEmptyFoldersAfterSync: boolean;   // Delete folders that become empty after sync
+	emptyFolderBehavior: EmptyFolderBehavior;  // What to do with empty folders after sync
 	// Tag creation settings
 	tagTemplateFile: string;                // Path to template file for new tags (empty = use default)
 	existingFileBehavior: ExistingFileBehavior;  // What to do when a file with matching name exists
@@ -62,7 +63,7 @@ export const DEFAULT_SETTINGS: TaggableTagsSettings = {
 	excludedTagsFromFolderSync: [],
 	excludedFoldersFromSync: [],
 	removeRedundantParentTags: true,
-	deleteEmptyFoldersAfterSync: false,
+	emptyFolderBehavior: 'nothing',
 	// Tag creation defaults
 	tagTemplateFile: '',
 	existingFileBehavior: 'ask',
@@ -317,12 +318,16 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 					}));
 
 			new Setting(containerEl)
-				.setName('Delete empty folders after sync')
-				.setDesc('Automatically delete folders that become empty after files are moved during sync.')
-				.addToggle(toggle => toggle
-					.setValue(this.plugin.settings.deleteEmptyFoldersAfterSync)
+				.setName('Empty folder behavior')
+				.setDesc('What to do with folders that become empty after files are moved during sync.')
+				.addDropdown(dropdown => dropdown
+					.addOption('nothing', 'Do nothing')
+					.addOption('delete', 'Delete empty folders')
+					.addOption('create-tag', 'Create tag note for empty folders')
+					.addOption('ask', 'Ask each time')
+					.setValue(this.plugin.settings.emptyFolderBehavior)
 					.onChange(async (value) => {
-						this.plugin.settings.deleteEmptyFoldersAfterSync = value;
+						this.plugin.settings.emptyFolderBehavior = value as EmptyFolderBehavior;
 						await this.plugin.saveSettings();
 					}));
 		}

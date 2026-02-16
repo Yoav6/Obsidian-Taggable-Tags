@@ -69,22 +69,10 @@ export class MigrationSettingsModal extends Modal {
 					})
 			);
 
-		// Delete empty folders
-		new Setting(contentEl)
-			.setName('Delete empty folders')
-			.setDesc('Remove folders that become empty after migration. Recommended: ON')
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.settings.deleteEmptyFolders)
-					.onChange((value) => {
-						this.settings.deleteEmptyFolders = value;
-					})
-			);
-
 		// Enable folder sync after
 		new Setting(contentEl)
 			.setName('Enable folder sync after migration')
-			.setDesc('Turn on folder synchronization after migration completes. This will keep your folder structure in sync with tags going forward. Recommended: OFF (enable manually after verifying results)')
+			.setDesc('Turn on folder synchronization after migration completes. This will keep your folder structure in sync with tags going forward. Recommended: ON (but can also be enabled manually afterwards)')
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.settings.enableFolderSyncAfter)

@@ -110,14 +110,23 @@ export class MigrationPreviewModal extends Modal {
 			);
 		}
 
-		// Empty folders to delete
-		if (this.preview.emptyFoldersToDelete.length > 0) {
+		// Conflicts to resolve
+		if (this.preview.conflictsToResolve > 0) {
 			this.renderSection(
 				changesContainer,
-				`Empty folders to delete (${this.preview.emptyFoldersToDelete.length})`,
-				this.preview.emptyFoldersToDelete.map((folder) => ({
+				`Naming conflicts to resolve (${this.preview.conflictsToResolve})`,
+				[{ primary: `${this.preview.conflictsToResolve} items will be renamed to prevent circular relationships`, secondary: '' }]
+			);
+		}
+
+		// Empty folders (will be handled in post-migration modal)
+		if (this.preview.emptyFolders.length > 0) {
+			this.renderSection(
+				changesContainer,
+				`Empty folders (${this.preview.emptyFolders.length})`,
+				this.preview.emptyFolders.slice(0, 10).map((folder) => ({
 					primary: folder.path,
-					secondary: '',
+					secondary: '(will be handled after migration)',
 				}))
 			);
 		}
@@ -150,11 +159,12 @@ export class MigrationPreviewModal extends Modal {
 
 	private getSummary(): { totalChanges: number } {
 		const totalChanges =
+			this.preview.conflictsToResolve +
 			this.preview.nestedTagsToFlatten.length +
 			this.preview.tagFilesToCreate.length +
 			this.preview.tagsToAdd.length +
-			this.preview.redundantTagsToRemove.reduce((sum, item) => sum + item.tags.length, 0) +
-			this.preview.emptyFoldersToDelete.length;
+			this.preview.redundantTagsToRemove.reduce((sum, item) => sum + item.tags.length, 0);
+		// Note: empty folders are not counted as changes since they're handled in post-migration modal
 
 		return { totalChanges };
 	}

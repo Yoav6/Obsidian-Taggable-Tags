@@ -967,12 +967,12 @@ export function previewFilesNeedingFolderTags(plugin: TaggableTagsPlugin): Array
 
 /**
  * Clean up empty folders after sync operations.
- * Only runs if the deleteEmptyFoldersAfterSync setting is enabled.
+ * Only runs if the emptyFolderBehavior setting is 'delete'.
  * 
  * @returns Number of folders deleted
  */
 export async function cleanupEmptyFolders(plugin: TaggableTagsPlugin): Promise<number> {
-	if (!plugin.settings.deleteEmptyFoldersAfterSync) {
+	if (plugin.settings.emptyFolderBehavior !== 'delete') {
 		return 0;
 	}
 	

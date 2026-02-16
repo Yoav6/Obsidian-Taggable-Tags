@@ -1,11 +1,10 @@
 import { Notice, TFile, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import type { TaggableTagsSettings, FolderTagBehavior, ExistingFileBehavior } from '../settings';
+import type { FolderTagBehavior, ExistingFileBehavior } from '../settings';
 import { flattenNestedTags } from './flatten-nested-tags';
 import { 
 	ensureFilesHaveFolderTags, 
 	previewFilesNeedingFolderTags,
-	cleanupEmptyFolders,
 	previewEmptyFolders,
 	isInExcludedFolder,
 	isExcludedFolderPath
@@ -19,13 +18,23 @@ import { namesMatch } from '../utils/name-matching';
 import { MigrationSettingsModal } from '../ui/migration-settings-modal';
 import { MigrationPreviewModal } from '../ui/migration-preview-modal';
 import { BackupReminderModal } from '../ui/backup-reminder-modal';
+import { ConflictResolutionModal } from '../ui/conflict-resolution-modal';
+import { EmptyFoldersModal } from '../ui/empty-folders-modal';
+import { MigrationProgressModal, MigrationStep } from '../ui/migration-progress-modal';
+import { 
+	detectNamingConflicts, 
+	hasConflicts, 
+	applyConflictResolutions,
+	NamingConflict,
+	ConflictResolution,
+	countRenames
+} from '../migration/conflict-detector';
 
 /**
  * Settings that the user can configure for migration.
  */
 export interface MigrationSettings {
 	removeRedundantParentTags: boolean;
-	deleteEmptyFolders: boolean;
 	flattenNestedTags: boolean;
 	enableFolderSyncAfter: boolean;
 	excludedFolders: string[];
@@ -36,7 +45,6 @@ export interface MigrationSettings {
  */
 export const RECOMMENDED_MIGRATION_SETTINGS: MigrationSettings = {
 	removeRedundantParentTags: true,
-	deleteEmptyFolders: true,
 	flattenNestedTags: true,
 	enableFolderSyncAfter: false,
 	excludedFolders: [], // Will be populated from current plugin settings
@@ -62,16 +70,17 @@ const FORCED_DURING_MIGRATION: ForcedSettings = {
  * Preview of what the migration will do.
  */
 export interface MigrationPreview {
+	conflictsToResolve: number;
 	tagFilesToCreate: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }>;
 	tagsToAdd: Array<{ file: TFile; folderTag: string }>;
 	redundantTagsToRemove: Array<{ file: TFile; tags: string[] }>;
 	nestedTagsToFlatten: Array<{ tag: string; levels: string[] }>;
-	emptyFoldersToDelete: TFolder[];
+	emptyFolders: TFolder[];
 }
 
 /**
  * Main entry point for the migrate vault command.
- * Runs a multi-step wizard: backup reminder -> settings -> preview -> apply.
+ * Runs a multi-step wizard: backup reminder -> settings -> conflict detection -> preview -> apply -> empty folders.
  */
 export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
 	// Step 1: Show backup reminder
@@ -90,19 +99,50 @@ export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
 		return; // User cancelled
 	}
 	
-	// Step 3: Generate and show preview
+	// Step 3: Detect naming conflicts
+	new Notice('Detecting naming conflicts...');
+	const conflictResult = detectNamingConflicts(plugin);
+	
+	let resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null = null;
+	
+	if (hasConflicts(conflictResult)) {
+		// Show conflict resolution modal
+		const conflictModal = new ConflictResolutionModal(plugin, conflictResult);
+		resolvedConflicts = await conflictModal.prompt();
+		
+		if (!resolvedConflicts) {
+			return; // User cancelled
+		}
+	}
+	
+	// Step 4: Generate and show preview
 	new Notice('Generating migration preview...');
-	const preview = await generateMigrationPreview(plugin, migrationSettings);
+	const preview = await generateMigrationPreview(plugin, migrationSettings, resolvedConflicts);
 	
 	const previewModal = new MigrationPreviewModal(plugin, preview, migrationSettings);
 	const shouldApply = await previewModal.prompt();
 	
 	if (!shouldApply) {
-		return; // User cancelled or went back
+		return; // User cancelled
 	}
 	
-	// Step 4: Apply migration
-	await applyMigration(plugin, migrationSettings);
+	// Step 5: Apply migration with progress modal
+	const emptyFolders = await applyMigration(plugin, migrationSettings, resolvedConflicts);
+	
+	// Step 6: Show empty folders modal if there are any
+	if (emptyFolders.length > 0) {
+		const emptyFoldersModal = new EmptyFoldersModal(plugin, emptyFolders);
+		const result = await emptyFoldersModal.prompt();
+		
+		if (result) {
+			const parts: string[] = [];
+			if (result.foldersDeleted > 0) parts.push(`${result.foldersDeleted} folders deleted`);
+			if (result.tagFilesCreated > 0) parts.push(`${result.tagFilesCreated} tag files created`);
+			if (parts.length > 0) {
+				new Notice(`Empty folders: ${parts.join(', ')}`);
+			}
+		}
+	}
 }
 
 /**
@@ -110,14 +150,16 @@ export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
  */
 export async function generateMigrationPreview(
 	plugin: TaggableTagsPlugin,
-	settings: MigrationSettings
+	settings: MigrationSettings,
+	resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null
 ): Promise<MigrationPreview> {
 	const preview: MigrationPreview = {
+		conflictsToResolve: resolvedConflicts ? countRenames(resolvedConflicts) : 0,
 		tagFilesToCreate: [],
 		tagsToAdd: [],
 		redundantTagsToRemove: [],
 		nestedTagsToFlatten: [],
-		emptyFoldersToDelete: [],
+		emptyFolders: [],
 	};
 	
 	// Preview nested tags to flatten (must happen first)
@@ -137,28 +179,43 @@ export async function generateMigrationPreview(
 		preview.redundantTagsToRemove = previewAllRedundantTags(plugin);
 	}
 	
-	// Preview empty folders to delete
-	if (settings.deleteEmptyFolders) {
-		preview.emptyFoldersToDelete = previewEmptyFolders(plugin);
-	}
+	// Preview empty folders (will be shown in post-migration modal)
+	preview.emptyFolders = previewEmptyFolders(plugin);
 	
 	return preview;
 }
 
 /**
  * Apply the migration with the given settings.
+ * Returns the list of empty folders for post-migration handling.
  */
 async function applyMigration(
 	plugin: TaggableTagsPlugin,
-	settings: MigrationSettings
-): Promise<void> {
+	settings: MigrationSettings,
+	resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null
+): Promise<TFolder[]> {
+	// Define migration steps
+	const steps: MigrationStep[] = [
+		{ id: 'conflicts', name: 'Resolving naming conflicts', status: 'pending' },
+		{ id: 'flatten', name: 'Flattening nested tags', status: 'pending' },
+		{ id: 'tag-files', name: 'Creating tag files for folders', status: 'pending' },
+		{ id: 'folder-tags', name: 'Adding folder tags to files', status: 'pending' },
+		{ id: 'redundant', name: 'Removing redundant parent tags', status: 'pending' },
+		{ id: 'rebuild', name: 'Rebuilding tag index', status: 'pending' },
+	];
+	
+	// Open progress modal
+	const progressModal = new MigrationProgressModal(plugin, steps);
+	// Don't await - we want to run migration while modal is open
+	const progressPromise = progressModal.start();
+	
 	// Save original settings
 	const originalSettings = {
 		existingFileBehavior: plugin.settings.existingFileBehavior,
 		keepOriginalFolderTag: plugin.settings.keepOriginalFolderTag,
 		autoCreateFiles: plugin.settings.autoCreateFiles,
 		removeRedundantParentTags: plugin.settings.removeRedundantParentTags,
-		deleteEmptyFoldersAfterSync: plugin.settings.deleteEmptyFoldersAfterSync,
+		emptyFolderBehavior: plugin.settings.emptyFolderBehavior,
 	};
 	
 	// Apply forced settings during migration
@@ -166,83 +223,88 @@ async function applyMigration(
 	plugin.settings.keepOriginalFolderTag = FORCED_DURING_MIGRATION.keepOriginalFolderTag;
 	plugin.settings.autoCreateFiles = FORCED_DURING_MIGRATION.autoCreateFiles;
 	plugin.settings.removeRedundantParentTags = settings.removeRedundantParentTags;
-	plugin.settings.deleteEmptyFoldersAfterSync = settings.deleteEmptyFolders;
+	plugin.settings.emptyFolderBehavior = 'nothing'; // Handle in post-migration modal
+	
+	let emptyFolders: TFolder[] = [];
 	
 	try {
-		new Notice('Starting migration...');
-		
 		let stats = {
+			conflictsResolved: 0,
 			tagFilesCreated: 0,
 			tagsAdded: 0,
 			redundantTagsRemoved: 0,
-			nestedTagsFlattened: 0,
-			emptyFoldersDeleted: 0,
 		};
 		
-		// Step 1: Flatten nested tags FIRST
-		// This creates tag files for nested tag levels and must happen before folder tag files
-		if (settings.flattenNestedTags) {
-			new Notice('Flattening nested tags...');
-			await flattenNestedTags(plugin);
-			// Note: flattenNestedTags shows its own notice with counts
+		// Step 1: Apply conflict resolutions (renames)
+		if (resolvedConflicts && countRenames(resolvedConflicts) > 0) {
+			progressModal.startStep('conflicts');
+			stats.conflictsResolved = await applyConflictResolutions(plugin, resolvedConflicts);
+			progressModal.completeStep('conflicts');
+		} else {
+			progressModal.skipStep('conflicts');
 		}
 		
-		// Step 2: Create tag files for all folders
-		// Now checks for existing tag files (including those just created by flatten)
-		new Notice('Creating tag files for folders...');
-		stats.tagFilesCreated = await createTagFilesForAllFolders(plugin, settings.excludedFolders);
+		// Step 2: Flatten nested tags FIRST
+		if (settings.flattenNestedTags) {
+			progressModal.startStep('flatten');
+			await flattenNestedTags(plugin);
+			progressModal.completeStep('flatten');
+		} else {
+			progressModal.skipStep('flatten');
+		}
 		
-		// Step 3: Ensure files have folder tags
-		new Notice('Adding folder tags to files...');
+		// Step 3: Create tag files for all folders
+		progressModal.startStep('tag-files');
+		stats.tagFilesCreated = await createTagFilesForAllFolders(plugin, settings.excludedFolders);
+		progressModal.completeStep('tag-files');
+		
+		// Step 4: Ensure files have folder tags
+		progressModal.startStep('folder-tags');
 		const tagResult = await ensureFilesHaveFolderTags(plugin);
 		stats.tagsAdded = tagResult.tagsAdded;
+		progressModal.completeStep('folder-tags');
 		
-		// Step 4: Remove redundant parent tags AFTER flattening
-		// Flattening may have added parent tags that are now redundant
+		// Step 5: Remove redundant parent tags AFTER flattening
 		if (settings.removeRedundantParentTags) {
-			new Notice('Removing redundant parent tags...');
+			progressModal.startStep('redundant');
 			stats.redundantTagsRemoved = await removeAllRedundantParentTags(plugin);
+			progressModal.completeStep('redundant');
+		} else {
+			progressModal.skipStep('redundant');
 		}
 		
-		// Step 5: Clean up empty folders
-		if (settings.deleteEmptyFolders) {
-			new Notice('Cleaning up empty folders...');
-			stats.emptyFoldersDeleted = await cleanupEmptyFolders(plugin);
-		}
+		// Step 6: Rebuild index
+		progressModal.startStep('rebuild');
+		await plugin.tagIndex.rebuild();
+		await plugin.updateTagRegistry();
+		progressModal.completeStep('rebuild');
 		
-		// Step 6: Optionally enable folder sync going forward
+		// Optionally enable folder sync going forward
 		if (settings.enableFolderSyncAfter) {
 			plugin.settings.syncFoldersWithTags = true;
 		}
 		
-		// Step 7: Rebuild index
-		await plugin.tagIndex.rebuild();
-		await plugin.updateTagRegistry();
+		// Get empty folders for post-migration modal
+		emptyFolders = previewEmptyFolders(plugin);
 		
-		// Show summary
-		const parts: string[] = [];
-		if (stats.tagFilesCreated > 0) parts.push(`${stats.tagFilesCreated} tag files created`);
-		if (stats.tagsAdded > 0) parts.push(`${stats.tagsAdded} tags added`);
-		if (stats.redundantTagsRemoved > 0) parts.push(`${stats.redundantTagsRemoved} redundant tags removed`);
-		if (stats.emptyFoldersDeleted > 0) parts.push(`${stats.emptyFoldersDeleted} empty folders deleted`);
-		
-		if (parts.length > 0) {
-			new Notice(`Migration complete: ${parts.join(', ')}`);
-		} else {
-			new Notice('Migration complete: no changes needed');
-		}
+		// Mark migration as complete
+		progressModal.setComplete();
 		
 	} finally {
-		// Restore original settings (except the ones user chose to keep)
+		// Restore original settings
 		plugin.settings.existingFileBehavior = originalSettings.existingFileBehavior;
 		plugin.settings.keepOriginalFolderTag = originalSettings.keepOriginalFolderTag;
 		plugin.settings.autoCreateFiles = originalSettings.autoCreateFiles;
-		// Keep the user's choices for these:
-		// - removeRedundantParentTags (user chose during migration)
-		// - deleteEmptyFoldersAfterSync (user chose during migration)
+		plugin.settings.emptyFolderBehavior = originalSettings.emptyFolderBehavior;
+		// Keep the user's choice for removeRedundantParentTags
 		
 		await plugin.saveSettings();
 	}
+	
+	// Wait for user to click Continue in progress modal
+	await progressPromise;
+	
+	return emptyFolders;
 }
 
 /**
