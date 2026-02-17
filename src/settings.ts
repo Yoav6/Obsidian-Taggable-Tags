@@ -308,16 +308,6 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 					}));
 
 			new Setting(containerEl)
-				.setName('Remove redundant parent tags')
-				.setDesc('When a file has both a tag and its parent (e.g., "cooking" and "recipes" where recipes is a child of cooking), automatically remove the parent tag since it\'s implied.')
-				.addToggle(toggle => toggle
-					.setValue(this.plugin.settings.removeRedundantParentTags)
-					.onChange(async (value) => {
-						this.plugin.settings.removeRedundantParentTags = value;
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(containerEl)
 				.setName('Empty folder behavior')
 				.setDesc('What to do with folders that become empty after files are moved during sync.')
 				.addDropdown(dropdown => dropdown
@@ -369,6 +359,16 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 
 		// Misc settings (at the bottom)
 		containerEl.createEl('h3', { text: 'Misc' });
+
+		new Setting(containerEl)
+			.setName('Remove redundant parent tags')
+			.setDesc('When a file has both a tag and its parent (e.g., "cooking" and "recipes" where recipes is a child of cooking), automatically remove the parent tag since it\'s implied.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.removeRedundantParentTags)
+				.onChange(async (value) => {
+					this.plugin.settings.removeRedundantParentTags = value;
+					await this.plugin.saveSettings();
+				}));
 
 		new Setting(containerEl)
 			.setName('Tag click action')
