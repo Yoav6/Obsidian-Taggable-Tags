@@ -111,6 +111,14 @@ If your plugin does not need CSS, delete this file.
 	margin-bottom: 0;
 }
 
+.taggable-tags-success {
+	background-color: rgba(var(--color-green-rgb), 0.1);
+	border-left: 4px solid var(--text-success);
+	padding: 1em;
+	border-radius: var(--radius-m);
+	margin: 1em 0;
+}
+
 .taggable-tags-modal-description {
 	color: var(--text-muted);
 	margin-bottom: 1em;

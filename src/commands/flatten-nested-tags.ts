@@ -1,7 +1,7 @@
-import { TFile, Notice } from 'obsidian';
+import { TFile, TFolder, Notice } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
-import { namesMatch } from '../utils/name-matching';
+import { namesMatch, findMatchingFolder } from '../utils/name-matching';
 
 /**
  * Information about a nested tag found in the vault.
@@ -200,6 +200,9 @@ function collectAllTagLevels(
  * Creates a tag file for the given tag if it doesn't already exist.
  * If a file with matching name exists, converts it to a tag file instead.
  * Returns true if a new file was created or an existing file was converted.
+ * 
+ * Note: Folder and file names keep the original tag name (with spaces etc).
+ * Only the tag property value is normalized.
  */
 async function createTagFileIfNeeded(
 	plugin: TaggableTagsPlugin,
@@ -225,23 +228,30 @@ async function createTagFileIfNeeded(
 		return true;
 	}
 
-	// Determine where to create the tag file
-	const sanitizedTagName = plugin.tagIndex.sanitizeTagName(tagName);
-	let filePath: string;
-	
-	// If there's a parent tag with a folder, create in that folder
+	// Find the parent folder to search in
+	let parentFolder: TFolder | undefined;
 	if (parentTag) {
 		const parentTagFile = plugin.tagIndex.getTagFile(parentTag);
-		if (parentTagFile && parentTagFile.parent && !parentTagFile.parent.isRoot()) {
-			// Create in the parent tag's folder
-			filePath = `${parentTagFile.parent.path}/${sanitizedTagName}/${sanitizedTagName}.md`;
-		} else {
-			// Create in a new folder in root
-			filePath = `${sanitizedTagName}/${sanitizedTagName}.md`;
+		if (parentTagFile?.parent && !parentTagFile.parent.isRoot()) {
+			parentFolder = parentTagFile.parent;
 		}
+	}
+
+	// Look for existing folder with matching name (normalized comparison)
+	// This ensures "Cultural Library" folder matches "cultural-library" tag
+	const searchRoot = parentFolder || plugin.app.vault.getRoot();
+	const existingFolder = findMatchingFolder(plugin, tagName, searchRoot);
+
+	let filePath: string;
+	if (existingFolder) {
+		// Use existing folder's actual path and name
+		filePath = `${existingFolder.path}/${existingFolder.name}.md`;
 	} else {
-		// No parent - create in a new folder in root
-		filePath = `${sanitizedTagName}/${sanitizedTagName}.md`;
+		// Create new folder with exact tag name
+		const basePath = parentFolder ? parentFolder.path : '';
+		filePath = basePath 
+			? `${basePath}/${tagName}/${tagName}.md`
+			: `${tagName}/${tagName}.md`;
 	}
 
 	// Check if file already exists at the path
@@ -256,23 +266,41 @@ async function createTagFileIfNeeded(
 		return false;
 	}
 
-	// Ensure the folder exists
-	const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
-	if (folderPath) {
-		const existingFolder = plugin.app.vault.getAbstractFileByPath(folderPath);
-		if (!existingFolder) {
-			await plugin.app.vault.createFolder(folderPath);
+	// Ensure the folder exists (only needed when creating a new folder)
+	if (!existingFolder) {
+		const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
+		if (folderPath) {
+			const folderAtPath = plugin.app.vault.getAbstractFileByPath(folderPath);
+			if (!folderAtPath) {
+				try {
+					await plugin.app.vault.createFolder(folderPath);
+				} catch (error) {
+					// Folder might already exist (race condition or case-insensitive match)
+					// This is not an error - continue with file creation
+				}
+			}
 		}
 	}
 
 	// Generate content with parent tag
 	const content = await generateTagFileContent(plugin, tagName, parentTag);
-	const file = await plugin.app.vault.create(filePath, content);
-
-	// Update the index
-	plugin.tagIndex.onTagFileCreated(file, tagName);
-
-	return true;
+	
+	try {
+		const file = await plugin.app.vault.create(filePath, content);
+		// Update the index
+		plugin.tagIndex.onTagFileCreated(file, tagName);
+		return true;
+	} catch (error) {
+		// File might already exist - try to convert it
+		const existingFile = plugin.app.vault.getAbstractFileByPath(filePath);
+		if (existingFile instanceof TFile && !plugin.tagIndex.isTagFile(existingFile)) {
+			await addTagPropertiesToFile(plugin, existingFile, tagName, parentTag);
+			plugin.tagIndex.onTagFileCreated(existingFile, tagName);
+			return true;
+		}
+		// File exists and is already a tag file, or some other error - not a problem
+		return false;
+	}
 }
 
 /**

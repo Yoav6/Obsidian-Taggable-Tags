@@ -18,15 +18,10 @@ export async function findCircularTags(plugin: TaggableTagsPlugin): Promise<void
 	// Get circular tags from the tag index
 	const circularTags = plugin.tagIndex.getCircularTags();
 	
-	if (circularTags.size === 0) {
-		new Notice('No circular relationships found!');
-		return;
-	}
+	// Find the actual cycles (if any)
+	const cycles = circularTags.size > 0 ? findCycles(plugin, circularTags) : [];
 	
-	// Find the actual cycles
-	const cycles = findCycles(plugin, circularTags);
-	
-	// Show results in a modal
+	// Always show results in a modal
 	const modal = new CircularTagsModal(plugin, circularTags, cycles);
 	modal.open();
 }
@@ -127,6 +122,30 @@ class CircularTagsModal extends Modal {
 		contentEl.addClass('taggable-tags-circular-modal');
 
 		contentEl.createEl('h2', { text: 'Circular tag relationships' });
+
+		// Handle case when no circular relationships found
+		if (this.circularTags.size === 0) {
+			contentEl.createEl('p', {
+				text: 'No circular relationships found.',
+				cls: 'taggable-tags-modal-description',
+			});
+			
+			const successDiv = contentEl.createDiv({ cls: 'taggable-tags-success' });
+			successDiv.createEl('p', {
+				text: 'Your tag hierarchy is free of circular relationships.',
+			});
+			
+			// Close button
+			const buttonContainer = contentEl.createDiv({ cls: 'taggable-tags-button-container' });
+			new Setting(buttonContainer)
+				.addButton((btn) =>
+					btn
+						.setButtonText('Close')
+						.setCta()
+						.onClick(() => this.close())
+				);
+			return;
+		}
 
 		contentEl.createEl('p', {
 			text: `Found ${this.circularTags.size} tag${this.circularTags.size === 1 ? '' : 's'} involved in circular relationships.`,

@@ -206,8 +206,7 @@ async function applyMigration(
 		{ id: 'flatten', name: 'Flattening nested tags', status: 'pending' },
 		{ id: 'tag-files', name: 'Creating tag files for folders', status: 'pending' },
 		{ id: 'folder-tags', name: 'Adding folder tags to files', status: 'pending' },
-		{ id: 'redundant', name: 'Removing redundant parent tags', status: 'pending' },
-		{ id: 'self-tags', name: 'Removing self-tags from tag files', status: 'pending' },
+		{ id: 'redundant', name: 'Removing redundant tags', status: 'pending' },
 		{ id: 'rebuild', name: 'Rebuilding tag index', status: 'pending' },
 	];
 	
@@ -267,22 +266,17 @@ async function applyMigration(
 	const folderTagResult = await ensureFilesHaveFolderTagsSafe(plugin, progressModal);
 	progressModal.completeStep('folder-tags', folderTagResult.errors > 0);
 	
-	// Step 5: Remove redundant parent tags AFTER flattening
+	// Step 5: Remove redundant tags (parent tags and self-tags) AFTER flattening
 	let redundantErrors = 0;
 	if (settings.removeRedundantParentTags) {
 		progressModal.startStep('redundant');
-		redundantErrors = await removeAllRedundantParentTagsSafe(plugin, progressModal);
+		redundantErrors = await removeAllRedundantTagsSafe(plugin, progressModal);
 		progressModal.completeStep('redundant', redundantErrors > 0);
 	} else {
 		progressModal.skipStep('redundant');
 	}
 	
-	// Step 6: Remove self-tags from tag files (e.g., music.md shouldn't be tagged with #music)
-	progressModal.startStep('self-tags');
-	const selfTagErrors = await removeSelfTagsFromTagFilesSafe(plugin, progressModal);
-	progressModal.completeStep('self-tags', selfTagErrors > 0);
-	
-	// Step 7: Rebuild index (this should always work)
+	// Step 6: Rebuild index (this should always work)
 	progressModal.startStep('rebuild');
 	try {
 		await plugin.tagIndex.rebuild();
@@ -455,7 +449,7 @@ async function createTagFilesForAllFoldersSafe(
 		);
 		if (isExcluded) return;
 		
-		// Check if this folder needs a tag file
+		// Get the normalized tag name for lookups, but use folder.name for file names
 		const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
 		if (tagName) {
 			const existingTagFile = plugin.tagIndex.getTagFile(tagName);
@@ -467,15 +461,15 @@ async function createTagFilesForAllFoldersSafe(
 						? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
 						: null;
 					
-					// Check for existing file with matching name
-					const matchingFile = findMatchingFileInFolderForMigration(plugin, folder, tagName);
+					// Check for existing file with matching name (use folder.name, not normalized tagName)
+					const matchingFile = findMatchingFileInFolderForMigration(plugin, folder, folder.name);
 					if (matchingFile) {
 						await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
 						plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
 						created++;
 					} else {
-						// Create new tag file
-						const filePath = `${folder.path}/${tagName}.md`;
+						// Create new tag file - use folder.name for the filename
+						const filePath = `${folder.path}/${folder.name}.md`;
 						
 						// Check if file already exists at this path
 						const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
@@ -539,9 +533,9 @@ async function ensureFilesHaveFolderTagsSafe(
 }
 
 /**
- * Remove redundant parent tags with error handling.
+ * Remove all redundant tags: parent tags from regular files and self-tags from tag files.
  */
-async function removeAllRedundantParentTagsSafe(
+async function removeAllRedundantTagsSafe(
 	plugin: TaggableTagsPlugin,
 	progressModal: MigrationProgressModal
 ): Promise<number> {
@@ -549,12 +543,17 @@ async function removeAllRedundantParentTagsSafe(
 	const files = plugin.app.vault.getMarkdownFiles();
 	
 	for (const file of files) {
-		if (plugin.tagIndex.isTagFile(file)) continue;
 		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
 		if (isInExcludedFolder(plugin, file)) continue;
 		
 		try {
-			await removeRedundantParentTags(plugin, file);
+			if (plugin.tagIndex.isTagFile(file)) {
+				// For tag files: remove self-tags
+				await removeSelfTagFromFile(plugin, file);
+			} else {
+				// For regular files: remove redundant parent tags
+				await removeRedundantParentTags(plugin, file);
+			}
 		} catch (error) {
 			errors++;
 			progressModal.addError('redundant', `Failed to remove redundant tags: ${String(error)}`, file.path);
@@ -565,68 +564,50 @@ async function removeAllRedundantParentTagsSafe(
 }
 
 /**
- * Remove self-tags from tag files (e.g., music.md shouldn't be tagged with #music).
+ * Remove self-tag from a tag file (e.g., remove #music from music.md).
  */
-async function removeSelfTagsFromTagFilesSafe(
-	plugin: TaggableTagsPlugin,
-	progressModal: MigrationProgressModal
-): Promise<number> {
-	let errors = 0;
-	const files = plugin.app.vault.getMarkdownFiles();
+async function removeSelfTagFromFile(plugin: TaggableTagsPlugin, file: TFile): Promise<void> {
+	const tagName = plugin.tagIndex.fileToTagName(file);
+	if (!tagName) return;
 	
-	for (const file of files) {
-		// Only process tag files
-		if (!plugin.tagIndex.isTagFile(file)) continue;
-		
-		const tagName = plugin.tagIndex.fileToTagName(file);
-		if (!tagName) continue;
-		
-		try {
-			const cache = plugin.app.metadataCache.getFileCache(file);
-			if (!cache?.frontmatter?.tags) continue;
-			
-			const tags = cache.frontmatter.tags;
-			if (!Array.isArray(tags)) continue;
-			
-			// Check if the file is tagged with its own tag
-			const normalizedTagName = plugin.tagIndex.normalizeTag(tagName);
-			const hasSelfTag = tags.some((t: unknown) => {
-				if (typeof t !== 'string') return false;
-				const normalizedT = plugin.tagIndex.normalizeTag(t);
-				return normalizedT === normalizedTagName;
-			});
-			
-			if (hasSelfTag) {
-				// Remove the self-tag
-				await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-					if (Array.isArray(fm.tags)) {
-						fm.tags = fm.tags.filter((t: unknown) => {
-							if (typeof t !== 'string') return true;
-							const normalizedT = plugin.tagIndex.normalizeTag(t);
-							return normalizedT !== normalizedTagName;
-						});
-						// If tags array is now empty, keep it as empty array (don't delete)
-					}
+	const cache = plugin.app.metadataCache.getFileCache(file);
+	if (!cache?.frontmatter?.tags) return;
+	
+	const tags = cache.frontmatter.tags;
+	if (!Array.isArray(tags)) return;
+	
+	// Check if the file is tagged with its own tag
+	const normalizedTagName = plugin.tagIndex.normalizeTag(tagName);
+	const hasSelfTag = tags.some((t: unknown) => {
+		if (typeof t !== 'string') return false;
+		const normalizedT = plugin.tagIndex.normalizeTag(t);
+		return normalizedT === normalizedTagName;
+	});
+	
+	if (hasSelfTag) {
+		// Remove the self-tag
+		await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+			if (Array.isArray(fm.tags)) {
+				fm.tags = fm.tags.filter((t: unknown) => {
+					if (typeof t !== 'string') return true;
+					const normalizedT = plugin.tagIndex.normalizeTag(t);
+					return normalizedT !== normalizedTagName;
 				});
 			}
-		} catch (error) {
-			errors++;
-			progressModal.addError('self-tags', `Failed to remove self-tag: ${String(error)}`, file.path);
-		}
+		});
 	}
-	
-	return errors;
 }
 
 /**
- * Find a file in a folder with a name matching the tag name (for migration).
+ * Find a file in a folder with a name matching the folder name (for migration).
+ * Uses the original folder name (not normalized) for matching.
  */
-function findMatchingFileInFolderForMigration(plugin: TaggableTagsPlugin, folder: TFolder, tagName: string): TFile | null {
+function findMatchingFileInFolderForMigration(plugin: TaggableTagsPlugin, folder: TFolder, folderName: string): TFile | null {
 	for (const child of folder.children) {
 		if (!(child instanceof TFile) || child.extension !== 'md') continue;
 		if (plugin.tagIndex.isTagFile(child)) continue;
 		
-		if (namesMatch(child.basename, tagName)) {
+		if (namesMatch(child.basename, folderName)) {
 			return child;
 		}
 	}

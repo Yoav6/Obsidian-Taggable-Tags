@@ -361,8 +361,8 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 		containerEl.createEl('h3', { text: 'Misc' });
 
 		new Setting(containerEl)
-			.setName('Remove redundant parent tags')
-			.setDesc('When a file has both a tag and its parent (e.g., "cooking" and "recipes" where recipes is a child of cooking), automatically remove the parent tag since it\'s implied.')
+			.setName('Remove redundant tags')
+			.setDesc('Automatically remove redundant tags: parent tags when a child is present (e.g., remove "cooking" if "recipes" exists and is a child of cooking), and self-tags from tag files (e.g., remove #music from music.md).')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.removeRedundantParentTags)
 				.onChange(async (value) => {
