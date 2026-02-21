@@ -1,6 +1,14 @@
+**This plugin is in alpha, test it in a test vault or a copy of your vault before installing it in any importent vault**
+
 # Taggable Tags
 
 A powerful Obsidian plugin turning tags into taggable tag notes, while synchronizing between your tag hierarchy and folder hierarchy.
+
+## Philosophy
+- Folders are unatural for categorizing knowledge. Every group can be a part of multiple other groups.
+- Tags should be notes. Every note can become a tag. Your tag hierarchy is a note hierarchy.
+- Create notes without thinking of categorization, and categorize as you go. Don't plan ahead.
+- Don't count on always and everyone having software that parses tagged tags. Maintain a fallback folder organization.
 
 ## Main Features
 
@@ -53,8 +61,8 @@ tags: [programming-languages, data-science-tools]
     - **Create child/parent tag**: Context menu action to create a new note and make it either a child or a parent tag of the current tag.
     - **Merge tag into parents**: Context menu action for tags with one parent which deletes the tag and replaces all its instances with instances of its parent.
     - **Split tag**: Context menu action for tags with multiple parents which deletes the tag and replaces all its instances with instances of its parents.
-    - **Create tag from filters**: Option that appears when filtering for two or more tags. Creates a new tag and replaces all instances of the tags with it in files which apply to the filters. Can be reversed with "split tag". 
-    - ****:
+    - **Create tag from filters**: Option that appears when filtering for two or more tags. Creates a new tag and replaces all instances of the tags with it in files which apply to the filters. Can be reversed with "split tag".
+    - **Rearrange tag order**: A command that lets you change the order tags are listed in the active note (since obsidian doesn't have a good native way to do that). This is mainly useful for the folder syncronization feature which is based on tag order. Otherwise tag order doesn't matter.
 - ****:
 
 More obscure features and details are covered in Q&A.md
