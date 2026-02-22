@@ -20,7 +20,7 @@ A powerful Obsidian plugin turning tags into taggable tag notes, while synchroni
 - **Rename sync**: If you change the tag property in a tag file, all usages of that tag throughout your vault are updated. You can also use the "Rename tag" command to rename a tag everywhere at once.
 - **Folder syncronization**: recreate your tag hierarchy as a folder hierarchy based on the first tag of each note, so if you or someone else ever needs to access your notes without access to software which cannot parse tags, a sensible hierarchy will still exist, and mirror your folder structure in tags so oyu can still interact with folder without breaking the tag-folder corrospondence.
 - **Tag manipulation**: There's a bunch of useful tag manipulation features like deleting, splitting, combining, rearranging, and renaming tags which means you never have to think about your tag hierarchy in advance of creating notes or tags.
-- **Migration utilities**: Since most users will want to use this plugin with a collction of notes that is currently based on folders for organization, the plugin has features that let you easily trnasition from one workflow to the other.
+- **Migration wizard (WIP)**: Since most users will want to use this plugin with a collction of notes that is currently based on folders for organization, the plugin has a migration wizard that helps you easily trnasition from one workflow to the other. This feature is currently a work in progress, it still doesn't work well even with my own vault.
 
 ## How it works
 
@@ -68,6 +68,12 @@ tags: [programming-languages, data-science-tools]
 - ****:
 
 More obscure features and details are covered in Q&A.md
+
+## Roadmap
+- **Migration**: get the migration feature working. This is the most important feature right now. Without it the plugin won't be very useful for existing vaults.
+- **Attachments**: attachments are tricky, because they cannot be tagged directly, so currently they do not show in the explorer view. In the future I would like to add some way to relate attachments to tags and show them in the explorer view.
+- **Graph View**: currently this plugin kinda breaks the graph view (mainly because there's a duplication between the tag itself and the tag note, which are not even connected in the graph since the tagnote isn't tagged with itself). I hope it's possible to modify the graph view to work better with this plugin.
+- 
 
 ### Commands
 
