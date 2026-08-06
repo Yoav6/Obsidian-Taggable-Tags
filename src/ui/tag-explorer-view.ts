@@ -14,6 +14,14 @@ interface TagOrGroup {
 	displayName: string;  // e.g., "history" or "history + fiction"
 }
 
+/** A place where the active file appears in the explorer */
+interface FileInstance {
+	/** Unique key matching data-instance-key on the rendered element */
+	instanceKey: string;
+	/** Tree paths that must be expanded to make this instance visible */
+	expandPaths: string[];
+}
+
 export class TagExplorerView extends ItemView {
 	private plugin: TaggableTagsPlugin;
 	// Track expanded state by tree path (e.g., "root>parent>child") to allow
@@ -31,6 +39,13 @@ export class TagExplorerView extends ItemView {
 	private viewMode: 'tree' | 'list' = 'tree';
 	// Content mode: what to show in the view
 	private contentMode: 'all' | 'tags' | 'files' = 'all';
+	// Cycle-reveal: which file we're cycling and the next index to show
+	private revealCycleFilePath: string | null = null;
+	private revealCycleIndex: number = 0;
+	// After refresh, scroll/highlight this instance key (skip scroll restore)
+	private pendingRevealKey: string | null = null;
+	private pendingRevealFilePath: string | null = null;
+	private highlightTimeout: number | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: TaggableTagsPlugin) {
 		super(leaf);
@@ -273,6 +288,16 @@ export class TagExplorerView extends ItemView {
 			this.refresh();
 		});
 
+		// Reveal / cycle active file instances
+		const revealBtn = headerButtons.createEl('div', {
+			cls: 'clickable-icon nav-action-button',
+			attr: { 'aria-label': 'Reveal active file' }
+		});
+		setIcon(revealBtn, 'crosshair');
+		revealBtn.addEventListener('click', () => {
+			this.revealNextActiveFileInstance();
+		});
+
 		// Render filter bar inside the fixed header
 		this.renderFilterBar(fixedHeader);
 
@@ -316,7 +341,7 @@ export class TagExplorerView extends ItemView {
 				// Only files mode - show flat list of all files
 				const allFiles = this.getAllFilesForDisplay(tagsToRender);
 				for (const file of allFiles.sort((a, b) => a.basename.localeCompare(b.basename))) {
-					this.renderFileNode(tree, file, 0, true);
+					this.renderFileNode(tree, file, 0, true, 'file:__flat__');
 				}
 			} else if (this.viewMode === 'list') {
 				// List mode - flat list without nesting, interleaved alphabetically
@@ -340,7 +365,7 @@ export class TagExplorerView extends ItemView {
 					if (item.type === 'tag' && item.tag) {
 						this.renderFlatTagNode(tree, item.tag);
 					} else if (item.type === 'file' && item.file) {
-						this.renderFileNode(tree, item.file, 0, true);
+						this.renderFileNode(tree, item.file, 0, true, 'file:__flat__');
 					}
 				}
 			} else {
@@ -354,7 +379,7 @@ export class TagExplorerView extends ItemView {
 				// Render files directly under root if filtering (and showing files)
 				if (showFiles && this.filterTags.size > 0) {
 					for (const file of tagsToRender.files.sort((a, b) => a.basename.localeCompare(b.basename))) {
-						this.renderFileNode(tree, file, 0);
+						this.renderFileNode(tree, file, 0, false, 'file:__root__');
 					}
 				}
 			}
@@ -367,15 +392,22 @@ export class TagExplorerView extends ItemView {
 				} else {
 					// Render files directly at top level
 					for (const file of untaggedFiles) {
-						this.renderFileNode(tree, file, 0);
+						this.renderFileNode(tree, file, 0, false, 'file:__root__');
 					}
 				}
 			}
 		}
 
-		// Restore scroll position after re-render
+		// Restore scroll position after re-render (unless we're revealing an instance)
 		const newScrollContainer = this.contentEl.querySelector('.scroll-container');
-		if (newScrollContainer && savedScrollTop > 0) {
+		if (this.pendingRevealKey) {
+			const key = this.pendingRevealKey;
+			const filePath = this.pendingRevealFilePath;
+			this.pendingRevealKey = null;
+			this.pendingRevealFilePath = null;
+			// Apply immediately so the next paint already shows the target position
+			this.applyRevealHighlight(key, filePath);
+		} else if (newScrollContainer && savedScrollTop > 0) {
 			newScrollContainer.scrollTop = savedScrollTop;
 		}
 	}
@@ -437,7 +469,10 @@ export class TagExplorerView extends ItemView {
 
 		const tagTitle = tagItem.createEl('div', { 
 			cls: 'tree-item-self is-clickable tag-item list-mode-item',
-			attr: { 'data-tag': tag }
+			attr: { 
+				'data-tag': tag,
+				'data-instance-key': `tag:__flat__:${tag}`
+			}
 		});
 
 		// Tag icon (replaces the expand/collapse arrow in list mode)
@@ -497,45 +532,19 @@ export class TagExplorerView extends ItemView {
 			if (this.hasExceptionTagToAnyAncestor(child, fullAncestorSet)) return false;
 			return true;
 		});
-		// Only get files if we're showing files (not in tags-only mode)
-		// Also filter out files that have an exclusive tag or an exception tag
-		const allFiles = this.contentMode === 'tags' ? [] : this.plugin.tagIndex.getFilesWithTag(primaryTag);
 		// Create a set of child tag names for quick lookup
-		const childTagsSet = new Set(children);
-		const files = allFiles.filter(file => {
-			// Skip tag files whose corresponding tag is already shown as a child tag node
-			// or is an ancestor (cycle prevention - don't show A.md under B when A > B > A)
-			if (this.plugin.tagIndex.isTagFile(file)) {
-				const tagName = this.plugin.tagIndex.fileToTagName(file);
-				if (tagName && (childTagsSet.has(tagName) || fullAncestorSet.has(tagName))) {
-					return false; // This tag file's tag is already shown as a tag node in this tree path
-				}
-			}
-			// If this tag itself is exclusive, show all its files
-			if (this.plugin.tagIndex.isExclusiveTag(primaryTag)) return true;
-			// Check each tag on the file
-			const fileTags = this.plugin.tagIndex.getAllTagsFromFile(file);
-			for (const fileTag of fileTags) {
-				// Filter out files that have an exclusive tag (they belong under that tag only)
-				if (this.plugin.tagIndex.isExclusiveTag(fileTag)) {
-					return false;
-				}
-				// Filter out files that have a tag that is an exception to any ancestor
-				// (e.g., file has #disliked which is exception to #liked, don't show anywhere under #liked)
-				if (this.isExceptionToAnyAncestor(fileTag, fullAncestorSet)) {
-					return false;
-				}
-			}
-			return true;
-		});
+		const files = this.getVisibleFilesUnderTag(primaryTag, children, fullAncestorSet);
 		const hasChildren = children.length > 0 || files.length > 0;
 
-		// Check if the primary tag has a corresponding file
+		// Single tags without a file get parent-level graying; combined tags
+		// use per-part tag-name-no-file instead (avoids stacked opacity).
+		const isCombined = group.tags.length > 1;
 		const hasTagFile = this.plugin.tagIndex.getTagFile(primaryTag) !== null;
+		const applyParentNoFile = !isCombined && !hasTagFile;
 
 		// Create the tag item
 		const tagItem = container.createEl('div', { 
-			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}${!hasChildren ? ' is-collapsed' : ''}${!hasTagFile ? ' tag-no-file' : ''}`
+			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}${!hasChildren ? ' is-collapsed' : ''}${applyParentNoFile ? ' tag-no-file' : ''}`
 		});
 		
 		// Store reference for navigation (for all tags in the group)
@@ -545,7 +554,10 @@ export class TagExplorerView extends ItemView {
 
 		const tagTitle = tagItem.createEl('div', { 
 			cls: 'tree-item-self is-clickable tag-item',
-			attr: { 'data-tag': group.tags.join(',') }
+			attr: { 
+				'data-tag': group.tags.join(','),
+				'data-instance-key': `tag:${treePath}`
+			}
 		});
 		tagTitle.style.paddingLeft = `${depth * 12 + 4}px`;
 
@@ -645,7 +657,7 @@ export class TagExplorerView extends ItemView {
 
 			// Then render files
 			for (const file of files.sort((a, b) => a.basename.localeCompare(b.basename))) {
-				this.renderFileNode(childrenContainer, file, depth + 1);
+				this.renderFileNode(childrenContainer, file, depth + 1, false, `file:${treePath}`);
 			}
 		}
 	}
@@ -655,12 +667,15 @@ export class TagExplorerView extends ItemView {
 		this.renderTagOrGroupNode(container, { tags: [tag], displayName: tag }, depth, ancestors, ancestorSet);
 	}
 
-	private renderFileNode(container: HTMLElement, file: TFile, depth: number, listMode: boolean = false): void {
+	private renderFileNode(container: HTMLElement, file: TFile, depth: number, listMode: boolean = false, instanceKey: string = 'file:__flat__'): void {
 		const fileItem = container.createEl('div', { cls: 'tree-item nav-file' });
 		
 		const fileTitle = fileItem.createEl('div', { 
 			cls: `tree-item-self is-clickable file-item${listMode ? ' list-mode-item' : ''}`,
-			attr: { 'data-path': file.path }
+			attr: { 
+				'data-path': file.path,
+				'data-instance-key': instanceKey
+			}
 		});
 		
 		if (listMode) {
@@ -734,7 +749,7 @@ export class TagExplorerView extends ItemView {
 		if (isExpanded) {
 			const childrenContainer = untaggedItem.createEl('div', { cls: 'tree-item-children nav-folder-children' });
 			for (const file of files) {
-				this.renderFileNode(childrenContainer, file, 1);
+				this.renderFileNode(childrenContainer, file, 1, false, 'file:__untagged__');
 			}
 		}
 	}
@@ -1075,6 +1090,267 @@ export class TagExplorerView extends ItemView {
 		for (const child of this.plugin.tagIndex.getChildTags(tag)) {
 			this.collapseTagRecursively(child, newAncestors, new Set(visited));
 		}
+	}
+
+	/**
+	 * Get child tags visible under a parent at a given tree position
+	 * (same filtering as renderTagOrGroupNode).
+	 */
+	private getVisibleChildTags(primaryTag: string, ancestorSet: Set<string>): string[] {
+		const allChildren = this.plugin.tagIndex.getChildTags(primaryTag);
+		const fullAncestorSet = new Set([...ancestorSet, primaryTag]);
+		return allChildren.filter(child => {
+			if (ancestorSet.has(child)) return false;
+			if (this.isExceptionToAnyAncestor(child, fullAncestorSet)) return false;
+			if (this.plugin.tagIndex.isExclusiveTag(child)) return false;
+			if (this.hasExceptionTagToAnyAncestor(child, fullAncestorSet)) return false;
+			return true;
+		});
+	}
+
+	/**
+	 * Get files visible directly under a tag node (same filtering as render).
+	 */
+	private getVisibleFilesUnderTag(primaryTag: string, children: string[], fullAncestorSet: Set<string>): TFile[] {
+		if (this.contentMode === 'tags') {
+			return [];
+		}
+		const allFiles = this.plugin.tagIndex.getFilesWithTag(primaryTag);
+		const childTagsSet = new Set(children);
+		return allFiles.filter(file => {
+			if (this.plugin.tagIndex.isTagFile(file)) {
+				const tagName = this.plugin.tagIndex.fileToTagName(file);
+				if (tagName && (childTagsSet.has(tagName) || fullAncestorSet.has(tagName))) {
+					return false;
+				}
+			}
+			if (this.plugin.tagIndex.isExclusiveTag(primaryTag)) return true;
+			const fileTags = this.plugin.tagIndex.getAllTagsFromFile(file);
+			for (const fileTag of fileTags) {
+				if (this.plugin.tagIndex.isExclusiveTag(fileTag)) {
+					return false;
+				}
+				if (this.isExceptionToAnyAncestor(fileTag, fullAncestorSet)) {
+					return false;
+				}
+			}
+			return true;
+		});
+	}
+
+	/**
+	 * Build the list of expandPaths needed to reveal a node at treePath
+	 * (every ancestor segment must be expanded, including the node itself).
+	 */
+	private getExpandPathsForTreePath(treePath: string): string[] {
+		if (!treePath) return [];
+		const parts = treePath.split('>');
+		const paths: string[] = [];
+		for (let i = 0; i < parts.length; i++) {
+			paths.push(parts.slice(0, i + 1).join('>'));
+		}
+		return paths;
+	}
+
+	/**
+	 * Expand paths for ancestor tags only (so a tag node itself becomes visible).
+	 */
+	private getExpandPathsForAncestors(ancestors: string[]): string[] {
+		const paths: string[] = [];
+		for (let i = 0; i < ancestors.length; i++) {
+			paths.push(ancestors.slice(0, i + 1).join('>'));
+		}
+		return paths;
+	}
+
+	/**
+	 * Collect every place the given file appears in the current explorer view.
+	 */
+	private collectFileInstances(file: TFile): FileInstance[] {
+		const instances: FileInstance[] = [];
+		const tagsToRender = this.getFilteredTags();
+		const showTags = this.contentMode !== 'files';
+		const showFiles = this.contentMode !== 'tags';
+
+		// Flat modes: at most one file-item instance
+		if (this.contentMode === 'files' || this.viewMode === 'list') {
+			if (showFiles) {
+				const allFiles = this.getAllFilesForDisplay(tagsToRender);
+				if (allFiles.some(f => f.path === file.path)) {
+					instances.push({ instanceKey: 'file:__flat__', expandPaths: [] });
+				}
+			}
+			// Tag file as a flat tag row (list mode only)
+			if (showTags && this.viewMode === 'list' && this.plugin.tagIndex.isTagFile(file)) {
+				const tagName = this.plugin.tagIndex.fileToTagName(file);
+				if (tagName) {
+					const allTags = this.getAllTagsForDisplay(tagsToRender.tags);
+					if (allTags.includes(tagName)) {
+						instances.push({
+							instanceKey: `tag:__flat__:${tagName}`,
+							expandPaths: []
+						});
+					}
+				}
+			}
+			return instances;
+		}
+
+		// Tree mode
+		if (showTags) {
+			const groups = this.groupTagsByChildren(tagsToRender.tags);
+			for (const group of groups) {
+				this.collectInstancesUnderTagGroup(group, file, [], new Set(), instances);
+			}
+		}
+
+		if (showFiles && this.filterTags.size > 0) {
+			if (tagsToRender.files.some(f => f.path === file.path)) {
+				instances.push({ instanceKey: 'file:__root__', expandPaths: [] });
+			}
+		}
+
+		if (showFiles && this.filterTags.size === 0 && this.plugin.settings.showUntaggedFiles) {
+			const untaggedFiles = this.plugin.tagIndex.getUntaggedFiles();
+			if (untaggedFiles.some(f => f.path === file.path)) {
+				if (this.plugin.settings.groupUntaggedFiles) {
+					instances.push({
+						instanceKey: 'file:__untagged__',
+						expandPaths: ['__untagged__']
+					});
+				} else {
+					instances.push({ instanceKey: 'file:__root__', expandPaths: [] });
+				}
+			}
+		}
+
+		return instances;
+	}
+
+	/**
+	 * Recursively collect instances of a file under a tag group in tree mode.
+	 */
+	private collectInstancesUnderTagGroup(
+		group: TagOrGroup,
+		file: TFile,
+		ancestors: string[],
+		ancestorSet: Set<string>,
+		instances: FileInstance[]
+	): void {
+		const primaryTag = group.tags[0];
+		const treePath = this.buildTreePath(ancestors, primaryTag);
+		const children = this.getVisibleChildTags(primaryTag, ancestorSet);
+		const fullAncestorSet = new Set([...ancestorSet, primaryTag]);
+
+		// Tag node itself represents the tag file
+		if (this.plugin.tagIndex.isTagFile(file)) {
+			const tagName = this.plugin.tagIndex.fileToTagName(file);
+			if (tagName && group.tags.includes(tagName)) {
+				instances.push({
+					instanceKey: `tag:${treePath}`,
+					expandPaths: this.getExpandPathsForAncestors(ancestors)
+				});
+			}
+		}
+
+		const files = this.getVisibleFilesUnderTag(primaryTag, children, fullAncestorSet);
+		if (files.some(f => f.path === file.path)) {
+			instances.push({
+				instanceKey: `file:${treePath}`,
+				expandPaths: this.getExpandPathsForTreePath(treePath)
+			});
+		}
+
+		const newAncestors = [...ancestors, primaryTag];
+		const newAncestorSet = new Set(ancestorSet);
+		for (const tag of group.tags) {
+			newAncestorSet.add(tag);
+		}
+
+		const childGroups = this.groupTagsByChildren(children);
+		for (const childGroup of childGroups) {
+			this.collectInstancesUnderTagGroup(childGroup, file, newAncestors, newAncestorSet, instances);
+		}
+	}
+
+	/**
+	 * Cycle through explorer instances of the active file: expand, scroll, highlight.
+	 */
+	private async revealNextActiveFileInstance(): Promise<void> {
+		const file = this.plugin.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice('No active file');
+			return;
+		}
+
+		const instances = this.collectFileInstances(file);
+		if (instances.length === 0) {
+			new Notice('Active file is not visible in the explorer');
+			return;
+		}
+
+		if (this.revealCycleFilePath !== file.path) {
+			this.revealCycleFilePath = file.path;
+			this.revealCycleIndex = 0;
+		}
+
+		const instance = instances[this.revealCycleIndex % instances.length];
+		this.revealCycleIndex = (this.revealCycleIndex + 1) % instances.length;
+
+		for (const path of instance.expandPaths) {
+			this.expandedPaths.add(path);
+		}
+
+		this.pendingRevealKey = instance.instanceKey;
+		this.pendingRevealFilePath = file.path;
+		await this.refresh();
+	}
+
+	/**
+	 * Scroll to and briefly highlight the revealed instance.
+	 */
+	private applyRevealHighlight(instanceKey: string, filePath: string | null): void {
+		// Clear any previous highlight
+		this.contentEl.querySelectorAll('.is-highlighted').forEach(el => {
+			el.removeClass('is-highlighted');
+		});
+		if (this.highlightTimeout) {
+			window.clearTimeout(this.highlightTimeout);
+			this.highlightTimeout = null;
+		}
+
+		let el: HTMLElement | null = null;
+		if (instanceKey.startsWith('file:') && filePath) {
+			el = this.contentEl.querySelector(
+				`[data-instance-key="${CSS.escape(instanceKey)}"][data-path="${CSS.escape(filePath)}"]`
+			) as HTMLElement | null;
+		} else {
+			el = this.contentEl.querySelector(
+				`[data-instance-key="${CSS.escape(instanceKey)}"]`
+			) as HTMLElement | null;
+		}
+		if (!el) return;
+
+		// Jump directly within the explorer scroll container (no smooth scroll from top)
+		const scrollContainer = this.contentEl.querySelector('.scroll-container') as HTMLElement | null;
+		if (scrollContainer) {
+			const elRect = el.getBoundingClientRect();
+			const containerRect = scrollContainer.getBoundingClientRect();
+			const offset =
+				scrollContainer.scrollTop +
+				(elRect.top - containerRect.top) -
+				(containerRect.height / 2) +
+				(elRect.height / 2);
+			scrollContainer.scrollTop = Math.max(0, offset);
+		} else {
+			el.scrollIntoView({ block: 'center', behavior: 'auto' });
+		}
+		el.addClass('is-highlighted');
+
+		this.highlightTimeout = window.setTimeout(() => {
+			el!.removeClass('is-highlighted');
+			this.highlightTimeout = null;
+		}, 1500);
 	}
 
 	/**
@@ -1912,9 +2188,6 @@ export class TagExplorerView extends ItemView {
 			.taggable-tags-explorer .tag-no-file .tag-name {
 				opacity: 0.5;
 			}
-			.taggable-tags-explorer .tag-no-file .tag-name-part {
-				opacity: 0.5;
-			}
 			/* Individual tag name without file (in combined tags) */
 			.taggable-tags-explorer .tag-name-no-file {
 				opacity: 0.5;
@@ -2214,6 +2487,10 @@ export class TagExplorerView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		if (this.highlightTimeout) {
+			window.clearTimeout(this.highlightTimeout);
+			this.highlightTimeout = null;
+		}
 		// Cleanup styles
 		if (this.styleEl) {
 			this.styleEl.remove();
@@ -2293,8 +2570,8 @@ class RenameTagModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTag)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTag.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
@@ -2387,15 +2664,12 @@ class CreateTagModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTagName)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTagName.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
-		// Normalize if needed
-		if (this.plugin.settings.forceLowercase) {
-			newTagName = newTagName.toLowerCase();
-		}
+		newTagName = this.plugin.tagIndex.normalizeTag(newTagName);
 
 		// Check if tag already exists
 		const existingFile = this.plugin.tagIndex.getTagFile(newTagName);
@@ -2529,15 +2803,15 @@ class CreateTagFromFiltersModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTag)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTag.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
 		// Check if tag already exists
 		const existingTags = this.plugin.tagIndex.getAllTags();
 		const normalizedNewTag = this.plugin.tagIndex.normalizeTag(newTag);
-		if (existingTags.some(t => this.plugin.tagIndex.normalizeTag(t) === normalizedNewTag)) {
+		if (existingTags.some(t => this.plugin.tagIndex.tagsMatch(t, normalizedNewTag))) {
 			new Notice(`Tag #${newTag} already exists`);
 			return;
 		}
@@ -2546,7 +2820,7 @@ class CreateTagFromFiltersModal extends Modal {
 			this.close();
 			
 			// 1. Create the new tag file
-			const newTagFile = await createTagFile(this.plugin, newTag);
+			const newTagFile = await createTagFile(this.plugin, normalizedNewTag);
 			if (!newTagFile) {
 				new Notice('Failed to create tag file');
 				return;

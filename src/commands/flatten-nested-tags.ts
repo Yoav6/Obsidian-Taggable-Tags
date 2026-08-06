@@ -1,7 +1,14 @@
 import { TFile, TFolder, Notice } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
-import { namesMatch, findMatchingFolder } from '../utils/name-matching';
+import { findMatchingFolder, findMatchingFileInFolder } from '../utils/name-matching';
+import {
+	wouldParentCreateCycle,
+	collectSafeParentTags,
+	filterSafeParentTags,
+	findFoldersWithLeafTag,
+} from '../utils/cycle-prevention';
+import { joinTagNameSegments, toComparisonKey } from '../utils/tag-naming';
 
 /**
  * Information about a nested tag found in the vault.
@@ -24,7 +31,6 @@ interface NestedTagInfo {
 export async function flattenNestedTags(plugin: TaggableTagsPlugin): Promise<void> {
 	new Notice('Scanning vault for nested tags...');
 
-	// Step 1: Find all nested tags in the vault
 	const nestedTags = findAllNestedTags(plugin);
 
 	if (nestedTags.size === 0) {
@@ -32,35 +38,158 @@ export async function flattenNestedTags(plugin: TaggableTagsPlugin): Promise<voi
 		return;
 	}
 
-	// Step 2: Collect all unique tag levels that need to be created
-	const allLevels = collectAllTagLevels(nestedTags);
+	const allLevels = collectAllTagLevels(plugin, nestedTags);
 
-	// Step 3: Create tag files for each level with parent relationships
+	// (tagName, parentTag) → canonical name created for that path pair
+	const resolvedByPair = new Map<string, string>();
+	// full nested tag → resolved leaf tag name used in file replacements
+	const resolvedLeaves = new Map<string, string>();
+
+	const pairKey = (tagName: string, parentTag: string | null) =>
+		toComparisonKey(tagName, plugin.settings) +
+		'::' +
+		(parentTag ? toComparisonKey(parentTag, plugin.settings) : '');
+
 	let createdCount = 0;
-	for (const { tagName, parentTag } of allLevels) {
-		const created = await createTagFileIfNeeded(plugin, tagName, parentTag);
-		if (created) {
+	for (const { tagName, parentTag, grandparentTag } of allLevels) {
+		const effectiveParent = resolveEffectiveParent(
+			plugin,
+			tagName,
+			parentTag,
+			grandparentTag,
+			resolvedByPair,
+			pairKey
+		);
+
+		const result = await createTagFileIfNeeded(plugin, tagName, effectiveParent);
+		if (result.created) {
 			createdCount++;
+		}
+
+		resolvedByPair.set(pairKey(tagName, parentTag), result.tagName);
+
+		// Record resolved leaf for nested tags that end with this (tagName, parentTag) pair
+		for (const [fullTag, info] of nestedTags) {
+			if (!plugin.tagIndex.tagsMatch(info.leafTag, tagName)) continue;
+			const leafParent =
+				info.levels.length >= 2
+					? plugin.tagIndex.normalizeTag(info.levels[info.levels.length - 2])
+					: null;
+			const parentsMatch =
+				(parentTag === null && leafParent === null) ||
+				(parentTag !== null &&
+					leafParent !== null &&
+					plugin.tagIndex.tagsMatch(parentTag, leafParent));
+			if (parentsMatch) {
+				resolvedLeaves.set(fullTag, result.tagName);
+			}
 		}
 	}
 
-	// Step 4: Replace all nested tags in the vault with their leaf tags
 	let filesUpdated = 0;
 	for (const tagInfo of nestedTags.values()) {
-		const updatedFiles = await replaceNestedTagInFiles(plugin, tagInfo);
+		const replacementLeaf =
+			resolvedLeaves.get(tagInfo.fullTag) ??
+			(await ensureResolvedLeaf(plugin, tagInfo, resolvedByPair, pairKey)).tagName;
+		const updatedFiles = await replaceNestedTagInFiles(plugin, tagInfo, replacementLeaf);
 		filesUpdated += updatedFiles;
 	}
 
-	// Step 5: Rebuild the tag index
 	await plugin.tagIndex.rebuild();
 	await plugin.updateTagRegistry();
 
-	// Show summary
 	new Notice(
 		`Flattened ${nestedTags.size} nested tag${nestedTags.size === 1 ? '' : 's'}, ` +
 		`created ${createdCount} tag file${createdCount === 1 ? '' : 's'}, ` +
 		`updated ${filesUpdated} file${filesUpdated === 1 ? '' : 's'}.`
 	);
+}
+
+/**
+ * Resolve the canonical parent for this path segment from prior pair resolutions.
+ * Never falls back to a compound created for a different parent pair.
+ */
+function resolveEffectiveParent(
+	plugin: TaggableTagsPlugin,
+	tagName: string,
+	parentTag: string | null,
+	grandparentTag: string | null,
+	resolvedByPair: Map<string, string>,
+	pairKey: (tagName: string, parentTag: string | null) => string
+): string | null {
+	if (parentTag === null) {
+		return null;
+	}
+
+	const parentPairKey = pairKey(parentTag, grandparentTag);
+	const resolvedParent = resolvedByPair.get(parentPairKey);
+	const effectiveParent = resolvedParent ?? parentTag;
+
+	// Guard: effective parent must be this path's resolved parent pair, not a
+	// compound belonging only to a different (parent, grandparent) pair.
+	if (resolvedParent) {
+		for (const [key, canonical] of resolvedByPair) {
+			if (key === parentPairKey) continue;
+			if (!plugin.tagIndex.tagsMatch(canonical, effectiveParent)) continue;
+			// Plain shared leaf name claimed by multiple pairs is fine
+			if (plugin.tagIndex.tagsMatch(canonical, parentTag)) continue;
+			console.warn(
+				`Flatten: cross-wired parent blocked for ${tagName}: ` +
+					`${effectiveParent} belongs to ${key}, expected ${parentPairKey}`
+			);
+			return parentTag;
+		}
+	} else if (grandparentTag !== null || parentTag !== null) {
+		// Parent pair should already be processed by topo order; log if missing
+		console.warn(
+			`Flatten: parent pair ${parentPairKey} not resolved yet for child ${tagName}; ` +
+				`using raw parent ${parentTag}`
+		);
+	}
+
+	return effectiveParent;
+}
+
+/**
+ * Ensure a nested tag's leaf exists (with disambiguation) and return the resolved name.
+ * Walks the path so each level uses the resolved parent for that chain.
+ */
+async function ensureResolvedLeaf(
+	plugin: TaggableTagsPlugin,
+	tagInfo: NestedTagInfo,
+	resolvedByPair: Map<string, string>,
+	pairKey: (tagName: string, parentTag: string | null) => string
+): Promise<{ tagName: string; created: boolean }> {
+	let lastResult: { tagName: string; created: boolean } = {
+		tagName: tagInfo.leafTag,
+		created: false,
+	};
+
+	for (let i = 0; i < tagInfo.levels.length; i++) {
+		const tagName = tagInfo.levels[i];
+		const parentTag = i > 0 ? tagInfo.levels[i - 1] : null;
+		const grandparentTag = i > 1 ? tagInfo.levels[i - 2] : null;
+		const mapKey = pairKey(tagName, parentTag);
+
+		const existing = resolvedByPair.get(mapKey);
+		if (existing) {
+			lastResult = { tagName: existing, created: false };
+			continue;
+		}
+
+		const effectiveParent = resolveEffectiveParent(
+			plugin,
+			tagName,
+			parentTag,
+			grandparentTag,
+			resolvedByPair,
+			pairKey
+		);
+		lastResult = await createTagFileIfNeeded(plugin, tagName, effectiveParent);
+		resolvedByPair.set(mapKey, lastResult.tagName);
+	}
+
+	return lastResult;
 }
 
 /**
@@ -72,7 +201,6 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 	const files = plugin.app.vault.getMarkdownFiles();
 
 	for (const file of files) {
-		// Skip the tag registry note
 		if (plugin.tagIndex.isTagRegistryNote(file)) {
 			continue;
 		}
@@ -80,7 +208,6 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 		const cache = plugin.app.metadataCache.getFileCache(file);
 		if (!cache) continue;
 
-		// Check frontmatter tags
 		if (cache.frontmatter?.tags) {
 			const fmTags = cache.frontmatter.tags;
 			if (Array.isArray(fmTags)) {
@@ -92,11 +219,11 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 			}
 		}
 
-		// Check inline tags
 		if (cache.tags) {
 			for (const tagCache of cache.tags) {
-				// tagCache.tag includes the # prefix
-				let tagName = tagCache.tag.startsWith('#') ? tagCache.tag.slice(1) : tagCache.tag;
+				const tagName = tagCache.tag.startsWith('#')
+					? tagCache.tag.slice(1)
+					: tagCache.tag;
 				if (tagName.includes('/')) {
 					addNestedTag(plugin, nestedTags, tagName, file);
 				}
@@ -107,17 +234,17 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 	return nestedTags;
 }
 
-/**
- * Adds a nested tag to the map, creating or updating the NestedTagInfo.
- */
 function addNestedTag(
 	plugin: TaggableTagsPlugin,
 	nestedTags: Map<string, NestedTagInfo>,
-	fullTag: string,
+	tag: string,
 	file: TFile
 ): void {
-	// Normalize the tag
-	const normalizedTag = plugin.settings.forceLowercase ? fullTag.toLowerCase() : fullTag;
+	const withoutHash = tag.startsWith('#') ? tag.slice(1) : tag;
+	const normalizedTag = withoutHash
+		.split('/')
+		.map(level => plugin.tagIndex.normalizeTag(level))
+		.join('/');
 
 	if (!nestedTags.has(normalizedTag)) {
 		const levels = normalizedTag.split('/');
@@ -132,64 +259,77 @@ function addNestedTag(
 	nestedTags.get(normalizedTag)!.files.add(file);
 }
 
+interface TagLevelEntry {
+	tagName: string;
+	parentTag: string | null;
+	/** Parent's parent from the nested path that introduced this pair (null for roots / top-level parents). */
+	grandparentTag: string | null;
+}
+
 /**
- * Collects all unique tag levels from nested tags with their parent relationships.
- * Returns them in order from root to leaf (so parents are created first).
+ * Collects all unique (tagName, parentTag) pairs from nested tags.
+ * Same leaf under different parents are kept as separate entries (for disambiguation).
+ * Topo order waits on the specific parent *pair* (parentTag, grandparentTag), not merely the parent name.
  */
 function collectAllTagLevels(
+	plugin: TaggableTagsPlugin,
 	nestedTags: Map<string, NestedTagInfo>
-): Array<{ tagName: string; parentTag: string | null }> {
-	// Use a map to track unique tags and their parents
-	// Key is tag name, value is parent tag (or null for root)
-	const tagParentMap = new Map<string, string | null>();
+): TagLevelEntry[] {
+	const entries: TagLevelEntry[] = [];
+	const seen = new Set<string>();
+
+	const entryKey = (tagName: string, parentTag: string | null) =>
+		toComparisonKey(tagName, plugin.settings) +
+		'::' +
+		(parentTag ? toComparisonKey(parentTag, plugin.settings) : '');
 
 	for (const tagInfo of nestedTags.values()) {
 		const levels = tagInfo.levels;
-
 		for (let i = 0; i < levels.length; i++) {
 			const tagName = levels[i];
 			const parentTag = i > 0 ? levels[i - 1] : null;
-
-			// Only set parent if not already set (first occurrence wins)
-			// This handles cases where same tag appears at different levels in different nested tags
-			if (!tagParentMap.has(tagName)) {
-				tagParentMap.set(tagName, parentTag);
+			const grandparentTag = i > 1 ? levels[i - 2] : null;
+			const key = entryKey(tagName, parentTag);
+			if (!seen.has(key)) {
+				seen.add(key);
+				entries.push({ tagName, parentTag, grandparentTag });
 			}
 		}
 	}
 
-	// Convert to array, sorted so parents come before children
-	// We do this by processing levels in order
-	const result: Array<{ tagName: string; parentTag: string | null }> = [];
-	const processed = new Set<string>();
+	const result: TagLevelEntry[] = [];
+	const processedKeys = new Set<string>();
 
-	// Process tags level by level
-	// First, add all root tags (no parent)
-	for (const [tagName, parentTag] of tagParentMap) {
-		if (parentTag === null && !processed.has(tagName)) {
-			result.push({ tagName, parentTag });
-			processed.add(tagName);
+	for (const entry of entries) {
+		if (entry.parentTag === null) {
+			result.push(entry);
+			processedKeys.add(entryKey(entry.tagName, entry.parentTag));
 		}
 	}
 
-	// Then iteratively add tags whose parents have been processed
 	let changed = true;
 	while (changed) {
 		changed = false;
-		for (const [tagName, parentTag] of tagParentMap) {
-			if (!processed.has(tagName) && parentTag !== null && processed.has(parentTag)) {
-				result.push({ tagName, parentTag });
-				processed.add(tagName);
+		for (const entry of entries) {
+			const key = entryKey(entry.tagName, entry.parentTag);
+			if (processedKeys.has(key)) continue;
+			if (entry.parentTag === null) continue;
+
+			// Ready only when this path's parent pair is processed — not any tag with the same name
+			const parentPairKey = entryKey(entry.parentTag, entry.grandparentTag);
+			if (processedKeys.has(parentPairKey)) {
+				result.push(entry);
+				processedKeys.add(key);
 				changed = true;
 			}
 		}
 	}
 
-	// Add any remaining tags (shouldn't happen in well-formed data, but just in case)
-	for (const [tagName, parentTag] of tagParentMap) {
-		if (!processed.has(tagName)) {
-			result.push({ tagName, parentTag });
-			processed.add(tagName);
+	for (const entry of entries) {
+		const key = entryKey(entry.tagName, entry.parentTag);
+		if (!processedKeys.has(key)) {
+			result.push(entry);
+			processedKeys.add(key);
 		}
 	}
 
@@ -197,76 +337,203 @@ function collectAllTagLevels(
 }
 
 /**
+ * Whether creating/parenting `tagName` under `parentTag` would wrongly merge into
+ * an existing root/cousin tag (e.g. #Quotes + parent #Sociognosticism).
+ */
+function needsFlattenDisambiguation(
+	plugin: TaggableTagsPlugin,
+	tagName: string,
+	parentTag: string
+): boolean {
+	const existing = plugin.tagIndex.getTagFile(tagName);
+	if (existing) {
+		return !tagFileBelongsUnderParent(plugin, existing, parentTag);
+	}
+
+	const parentFolder = folderForTag(plugin, parentTag);
+	const peers = findFoldersWithLeafTag(plugin, tagName);
+	for (const folder of peers) {
+		if (parentFolder && isFolderUnder(folder, parentFolder)) {
+			continue;
+		}
+		// Foreign folder with the same leaf name
+		return true;
+	}
+
+	return false;
+}
+
+function folderForTag(plugin: TaggableTagsPlugin, tagName: string): TFolder | null {
+	// Prefer the canonical tag file's folder so disambiguated compounds
+	// (e.g. Education_Law) never steal placement meant for plain #Education.
+	const tagFile = plugin.tagIndex.getTagFile(tagName);
+	if (tagFile?.parent && !tagFile.parent.isRoot()) {
+		return tagFile.parent;
+	}
+
+	const folders = findFoldersWithLeafTag(plugin, tagName);
+	if (folders.length === 0) return null;
+	folders.sort((a, b) => {
+		const depthDiff =
+			a.path.split('/').filter(Boolean).length - b.path.split('/').filter(Boolean).length;
+		if (depthDiff !== 0) return depthDiff;
+		return a.path.localeCompare(b.path);
+	});
+	return folders[0];
+}
+
+function isFolderUnder(folder: TFolder, ancestor: TFolder): boolean {
+	return folder.path === ancestor.path || folder.path.startsWith(ancestor.path + '/');
+}
+
+function tagFileBelongsUnderParent(
+	plugin: TaggableTagsPlugin,
+	tagFile: TFile,
+	parentTag: string
+): boolean {
+	const parentFolder = folderForTag(plugin, parentTag);
+	if (!parentFolder || !tagFile.parent || tagFile.parent.isRoot()) {
+		return false;
+	}
+	return isFolderUnder(tagFile.parent, parentFolder);
+}
+
+/**
+ * Resolve the canonical tag name to use for this (tagName, parentTag) pair.
+ */
+function resolveFlattenTagName(
+	plugin: TaggableTagsPlugin,
+	tagName: string,
+	parentTag: string | null
+): { canonicalName: string; parents: string[]; disambiguated: boolean } {
+	const normalized = plugin.tagIndex.normalizeTag(tagName);
+	const safeParent =
+		parentTag && !wouldParentCreateCycle(plugin, normalized, parentTag)
+			? plugin.tagIndex.normalizeTag(parentTag)
+			: null;
+
+	if (!safeParent) {
+		return { canonicalName: normalized, parents: [], disambiguated: false };
+	}
+
+	if (needsFlattenDisambiguation(plugin, normalized, safeParent)) {
+		let compound = joinTagNameSegments([normalized, safeParent], plugin.settings);
+		// Avoid colliding with an existing unrelated tag
+		if (
+			plugin.tagIndex.getTagFile(compound) &&
+			!tagFileBelongsUnderParent(plugin, plugin.tagIndex.getTagFile(compound)!, safeParent)
+		) {
+			for (let i = 2; i <= 100; i++) {
+				const candidate = joinTagNameSegments([compound, String(i)], plugin.settings);
+				if (!plugin.tagIndex.getTagFile(candidate)) {
+					compound = candidate;
+					break;
+				}
+			}
+		}
+		const parents = collectSafeParentTags(plugin, compound, safeParent, [normalized]);
+		return { canonicalName: compound, parents, disambiguated: true };
+	}
+
+	return {
+		canonicalName: normalized,
+		parents: collectSafeParentTags(plugin, normalized, safeParent, []),
+		disambiguated: false,
+	};
+}
+
+/**
  * Creates a tag file for the given tag if it doesn't already exist.
- * If a file with matching name exists, converts it to a tag file instead.
- * Returns true if a new file was created or an existing file was converted.
- * 
- * Note: Folder and file names keep the original tag name (with spaces etc).
- * Only the tag property value is normalized.
+ * When the leaf would wrongly merge into a cousin/root tag, uses a settings-joined
+ * compound name and dual-parents instead of attaching the parent to the shared leaf.
  */
 async function createTagFileIfNeeded(
 	plugin: TaggableTagsPlugin,
 	tagName: string,
 	parentTag: string | null
-): Promise<boolean> {
-	// Check if tag file already exists in the index
-	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
+): Promise<{ created: boolean; tagName: string }> {
+	const { canonicalName, parents, disambiguated } = resolveFlattenTagName(
+		plugin,
+		tagName,
+		parentTag
+	);
+	const safeParents = filterSafeParentTags(plugin, canonicalName, parents);
+
+	const existingTagFile = plugin.tagIndex.getTagFile(canonicalName);
 	if (existingTagFile) {
-		// Tag file exists - check if we need to add the parent relationship
-		if (parentTag) {
-			await ensureParentRelationship(plugin, existingTagFile, parentTag);
+		if (disambiguated) {
+			for (const parent of safeParents) {
+				await ensureParentRelationship(plugin, existingTagFile, parent);
+			}
+		} else if (safeParents.length > 0) {
+			// Only attach parents when the tag note lives under that parent's folder
+			for (const parent of safeParents) {
+				if (tagFileBelongsUnderParent(plugin, existingTagFile, parent)) {
+					await ensureParentRelationship(plugin, existingTagFile, parent);
+				}
+			}
 		}
-		return false;
+		return { created: false, tagName: canonicalName };
 	}
 
-	// Check if a file with matching name exists that can be converted
-	const matchingFile = findMatchingFileForTag(plugin, tagName);
-	if (matchingFile) {
-		// Convert existing file to tag note by adding tag properties
-		await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
-		plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
-		return true;
+	return createDisambiguatedTagFile(plugin, canonicalName, safeParents);
+}
+
+async function createDisambiguatedTagFile(
+	plugin: TaggableTagsPlugin,
+	canonicalName: string,
+	parents: string[]
+): Promise<{ created: boolean; tagName: string }> {
+	const safeParents = filterSafeParentTags(plugin, canonicalName, parents);
+	const existingTagFile = plugin.tagIndex.getTagFile(canonicalName);
+	if (existingTagFile) {
+		for (const parent of safeParents) {
+			await ensureParentRelationship(plugin, existingTagFile, parent);
+		}
+		return { created: false, tagName: canonicalName };
 	}
 
-	// Find the parent folder to search in
+	const primaryParent = safeParents[0] ?? null;
 	let parentFolder: TFolder | undefined;
-	if (parentTag) {
-		const parentTagFile = plugin.tagIndex.getTagFile(parentTag);
+	if (primaryParent) {
+		const parentTagFile = plugin.tagIndex.getTagFile(primaryParent);
 		if (parentTagFile?.parent && !parentTagFile.parent.isRoot()) {
 			parentFolder = parentTagFile.parent;
 		}
 	}
 
-	// Look for existing folder with matching name (normalized comparison)
-	// This ensures "Cultural Library" folder matches "cultural-library" tag
 	const searchRoot = parentFolder || plugin.app.vault.getRoot();
-	const existingFolder = findMatchingFolder(plugin, tagName, searchRoot);
+	const existingFolder = findMatchingFolder(plugin, canonicalName, searchRoot);
+	const matchingFile = existingFolder
+		? findMatchingFileInFolder(plugin, existingFolder, canonicalName)
+		: null;
+	if (matchingFile) {
+		await addTagPropertiesToFile(plugin, matchingFile, canonicalName, safeParents);
+		plugin.tagIndex.onTagFileCreated(matchingFile, canonicalName);
+		return { created: true, tagName: canonicalName };
+	}
 
 	let filePath: string;
 	if (existingFolder) {
-		// Use existing folder's actual path and name
 		filePath = `${existingFolder.path}/${existingFolder.name}.md`;
 	} else {
-		// Create new folder with exact tag name
+		const displayName = plugin.tagIndex.toDisplayName(canonicalName);
 		const basePath = parentFolder ? parentFolder.path : '';
-		filePath = basePath 
-			? `${basePath}/${tagName}/${tagName}.md`
-			: `${tagName}/${tagName}.md`;
+		filePath = basePath
+			? `${basePath}/${displayName}/${displayName}.md`
+			: `${displayName}/${displayName}.md`;
 	}
 
-	// Check if file already exists at the path
 	const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
 	if (existingFileAtPath) {
-		// File exists - try to convert it if it's not already a tag file
 		if (existingFileAtPath instanceof TFile && !plugin.tagIndex.isTagFile(existingFileAtPath)) {
-			await addTagPropertiesToFile(plugin, existingFileAtPath, tagName, parentTag);
-			plugin.tagIndex.onTagFileCreated(existingFileAtPath, tagName);
-			return true;
+			await addTagPropertiesToFile(plugin, existingFileAtPath, canonicalName, safeParents);
+			plugin.tagIndex.onTagFileCreated(existingFileAtPath, canonicalName);
+			return { created: true, tagName: canonicalName };
 		}
-		return false;
+		return { created: false, tagName: canonicalName };
 	}
 
-	// Ensure the folder exists (only needed when creating a new folder)
 	if (!existingFolder) {
 		const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
 		if (folderPath) {
@@ -274,55 +541,28 @@ async function createTagFileIfNeeded(
 			if (!folderAtPath) {
 				try {
 					await plugin.app.vault.createFolder(folderPath);
-				} catch (error) {
-					// Folder might already exist (race condition or case-insensitive match)
-					// This is not an error - continue with file creation
+				} catch {
+					// Folder might already exist
 				}
 			}
 		}
 	}
 
-	// Generate content with parent tag
-	const content = await generateTagFileContent(plugin, tagName, parentTag);
-	
+	const content = await generateTagFileContent(plugin, canonicalName, safeParents);
+
 	try {
 		const file = await plugin.app.vault.create(filePath, content);
-		// Update the index
-		plugin.tagIndex.onTagFileCreated(file, tagName);
-		return true;
-	} catch (error) {
-		// File might already exist - try to convert it
+		plugin.tagIndex.onTagFileCreated(file, canonicalName);
+		return { created: true, tagName: canonicalName };
+	} catch {
 		const existingFile = plugin.app.vault.getAbstractFileByPath(filePath);
 		if (existingFile instanceof TFile && !plugin.tagIndex.isTagFile(existingFile)) {
-			await addTagPropertiesToFile(plugin, existingFile, tagName, parentTag);
-			plugin.tagIndex.onTagFileCreated(existingFile, tagName);
-			return true;
+			await addTagPropertiesToFile(plugin, existingFile, canonicalName, safeParents);
+			plugin.tagIndex.onTagFileCreated(existingFile, canonicalName);
+			return { created: true, tagName: canonicalName };
 		}
-		// File exists and is already a tag file, or some other error - not a problem
-		return false;
+		return { created: false, tagName: canonicalName };
 	}
-}
-
-/**
- * Find a file in the vault with a name matching the tag name.
- * Used to convert existing files to tag notes instead of creating new ones.
- */
-function findMatchingFileForTag(plugin: TaggableTagsPlugin, tagName: string): TFile | null {
-	const files = plugin.app.vault.getMarkdownFiles();
-	
-	for (const file of files) {
-		// Skip files that are already tag files
-		if (plugin.tagIndex.isTagFile(file)) continue;
-		
-		// Skip the tag registry note
-		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
-		
-		// Check if basename matches tag name (using normalized comparison)
-		if (namesMatch(file.basename, tagName)) {
-			return file;
-		}
-	}
-	return null;
 }
 
 /**
@@ -334,22 +574,26 @@ async function ensureParentRelationship(
 	file: TFile,
 	parentTag: string
 ): Promise<void> {
+	const tagName =
+		plugin.tagIndex.getTagForFilePath(file.path) ??
+		plugin.tagIndex.fileToTagName(file);
+	if (tagName && wouldParentCreateCycle(plugin, tagName, parentTag)) {
+		return;
+	}
+
 	const cache = plugin.app.metadataCache.getFileCache(file);
 	if (!cache?.frontmatter) return;
 
 	const existingTags = cache.frontmatter.tags;
-	const normalizedParent = plugin.settings.forceLowercase ? parentTag.toLowerCase() : parentTag;
+	const normalizedParent = plugin.tagIndex.normalizeTag(parentTag);
 
-	// Check if parent is already in tags
 	if (Array.isArray(existingTags)) {
 		const hasParent = existingTags.some(
-			(t: unknown) => typeof t === 'string' && 
-				(plugin.settings.forceLowercase ? t.toLowerCase() : t) === normalizedParent
+			(t: unknown) => typeof t === 'string' && plugin.tagIndex.tagsMatch(t, normalizedParent)
 		);
 		if (hasParent) return;
 	}
 
-	// Add parent tag to the file's frontmatter
 	const content = await plugin.app.vault.read(file);
 	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
 	const match = content.match(frontmatterRegex);
@@ -359,33 +603,27 @@ async function ensureParentRelationship(
 	const frontmatter = match[1];
 	let newFrontmatter: string;
 
-	// Check if tags property exists
 	const tagsMatch = frontmatter.match(/^tags:\s*(\[.*\])?$/m);
 	if (tagsMatch) {
-		// Tags property exists
 		if (tagsMatch[1] === '[]') {
-			// Empty array - replace with array containing parent
 			newFrontmatter = frontmatter.replace(/^tags:\s*\[\]$/m, `tags:\n  - ${normalizedParent}`);
 		} else if (tagsMatch[1]) {
-			// Inline array - convert to multiline and add parent
-			const existingTagsStr = tagsMatch[1].slice(1, -1); // Remove [ ]
+			const existingTagsStr = tagsMatch[1].slice(1, -1);
 			const existingTagsList = existingTagsStr.split(',').map(t => t.trim()).filter(t => t);
 			existingTagsList.push(normalizedParent);
 			const newTagsStr = existingTagsList.map(t => `  - ${t}`).join('\n');
 			newFrontmatter = frontmatter.replace(/^tags:\s*\[.*\]$/m, `tags:\n${newTagsStr}`);
 		} else {
-			// Multiline array - add parent at the end of the tags section
 			const tagsEndMatch = frontmatter.match(/^tags:\n((?:\s+-\s+.*\n?)*)/m);
 			if (tagsEndMatch) {
 				const tagsSection = tagsEndMatch[0];
 				const newTagsSection = tagsSection.trimEnd() + `\n  - ${normalizedParent}`;
 				newFrontmatter = frontmatter.replace(tagsEndMatch[0], newTagsSection);
 			} else {
-				return; // Can't parse tags section
+				return;
 			}
 		}
 	} else {
-		// No tags property - add it
 		newFrontmatter = frontmatter + `\ntags:\n  - ${normalizedParent}`;
 	}
 
@@ -394,17 +632,17 @@ async function ensureParentRelationship(
 }
 
 /**
- * Replaces all instances of a nested tag with its leaf tag in all files where it appears.
- * Returns the number of files that were updated.
+ * Replaces all instances of a nested tag with its resolved leaf tag.
  */
 async function replaceNestedTagInFiles(
 	plugin: TaggableTagsPlugin,
-	tagInfo: NestedTagInfo
+	tagInfo: NestedTagInfo,
+	replacementLeaf: string
 ): Promise<number> {
 	let filesUpdated = 0;
 
 	for (const file of tagInfo.files) {
-		const updated = await replaceNestedTagInFile(plugin, file, tagInfo);
+		const updated = await replaceNestedTagInFile(plugin, file, tagInfo, replacementLeaf);
 		if (updated) {
 			filesUpdated++;
 		}
@@ -414,130 +652,61 @@ async function replaceNestedTagInFiles(
 }
 
 /**
- * Replaces a nested tag with its leaf tag in a single file.
- * Handles both frontmatter tags and inline tags.
- * Returns true if the file was modified.
+ * Replaces a nested tag with the resolved leaf tag in a single file.
  */
 async function replaceNestedTagInFile(
 	plugin: TaggableTagsPlugin,
 	file: TFile,
-	tagInfo: NestedTagInfo
+	tagInfo: NestedTagInfo,
+	replacementLeaf: string
 ): Promise<boolean> {
-	let content = await plugin.app.vault.read(file);
+	const content = await plugin.app.vault.read(file);
+	const fullTag = tagInfo.fullTag;
+	const leafTag = replacementLeaf;
+
+	const escapedFullTag = fullTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+	let newContent = content;
 	let modified = false;
 
-	// Replace in frontmatter tags
 	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
 	const fmMatch = content.match(frontmatterRegex);
-
 	if (fmMatch) {
 		const frontmatter = fmMatch[1];
 		let newFrontmatter = frontmatter;
 
-		// Handle tags in YAML array format (both inline and multiline)
-		// Inline: tags: [media/music/songs, other]
-		// Multiline:
-		// tags:
-		//   - media/music/songs
-		//   - other
-
-		// Create regex patterns for the nested tag (case-insensitive if forceLowercase)
-		const escapedFullTag = escapeRegex(tagInfo.fullTag);
-		const caseFlag = plugin.settings.forceLowercase ? 'i' : '';
-
-		// Replace in inline array format: [tag1, nested/tag, tag2]
-		// Match the tag preceded by [ or , or whitespace, followed by , or ] or whitespace
-		const inlineArrayRegex = new RegExp(
+		const inlineRegex = new RegExp(
 			`(tags:\\s*\\[[^\\]]*?(?:^|[\\[,\\s]))${escapedFullTag}(?=[\\],\\s]|$)`,
-			'gm' + caseFlag
+			'm'
 		);
-		const replacedInline = newFrontmatter.replace(inlineArrayRegex, `$1${tagInfo.leafTag}`);
-		if (replacedInline !== newFrontmatter) {
-			newFrontmatter = replacedInline;
+		if (inlineRegex.test(newFrontmatter)) {
+			newFrontmatter = newFrontmatter.replace(inlineRegex, `$1${leafTag}`);
 			modified = true;
 		}
 
-		// Replace in multiline array format: - nested/tag
-		// Use global + multiline flags to replace all occurrences
 		const multilineRegex = new RegExp(
-			`(^\\s*-\\s*)${escapedFullTag}(\\s*$)`,
-			'gm' + caseFlag
+			`(^\\s+-\\s+)${escapedFullTag}(\\s*)$`,
+			'm'
 		);
-		const replacedMultiline = newFrontmatter.replace(multilineRegex, `$1${tagInfo.leafTag}$2`);
-		if (replacedMultiline !== newFrontmatter) {
-			newFrontmatter = replacedMultiline;
-			modified = true;
-		}
-
-		// Also handle quoted tags in YAML: - "nested/tag" or - 'nested/tag'
-		const quotedRegex = new RegExp(
-			`(^\\s*-\\s*)["']${escapedFullTag}["'](\\s*$)`,
-			'gm' + caseFlag
-		);
-		const replacedQuoted = newFrontmatter.replace(quotedRegex, `$1${tagInfo.leafTag}$2`);
-		if (replacedQuoted !== newFrontmatter) {
-			newFrontmatter = replacedQuoted;
+		if (multilineRegex.test(newFrontmatter)) {
+			newFrontmatter = newFrontmatter.replace(multilineRegex, `$1${leafTag}$2`);
 			modified = true;
 		}
 
 		if (modified) {
-			content = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
+			newContent = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
 		}
 	}
 
-	// Replace inline tags in the body (after frontmatter)
-	// Match #nested/tag but not inside code blocks
-	const bodyStart = fmMatch ? fmMatch[0].length : 0;
-	const body = content.slice(bodyStart);
-
-	// Split by code blocks to avoid replacing tags inside them
-	const codeBlockRegex = /```[\s\S]*?```|`[^`]+`/g;
-	const parts: { text: string; isCode: boolean }[] = [];
-	let lastIndex = 0;
-	let codeMatch;
-
-	while ((codeMatch = codeBlockRegex.exec(body)) !== null) {
-		if (codeMatch.index > lastIndex) {
-			parts.push({ text: body.slice(lastIndex, codeMatch.index), isCode: false });
-		}
-		parts.push({ text: codeMatch[0], isCode: true });
-		lastIndex = codeMatch.index + codeMatch[0].length;
-	}
-	if (lastIndex < body.length) {
-		parts.push({ text: body.slice(lastIndex), isCode: false });
-	}
-
-	// Replace inline tags in non-code parts
-	const escapedFullTag = escapeRegex(tagInfo.fullTag);
-	const inlineTagRegex = new RegExp(
-		`#${escapedFullTag}(?=[\\s\\]\\)\\},;:!?'"\`]|$)`,
-		plugin.settings.forceLowercase ? 'gi' : 'g'
-	);
-
-	let newBody = '';
-	for (const part of parts) {
-		if (part.isCode) {
-			newBody += part.text;
-		} else {
-			const replaced = part.text.replace(inlineTagRegex, `#${tagInfo.leafTag}`);
-			if (replaced !== part.text) {
-				modified = true;
-			}
-			newBody += replaced;
-		}
+	const inlineTagRegex = new RegExp(`#${escapedFullTag}(?![\\w/\\-])`, 'g');
+	if (inlineTagRegex.test(newContent)) {
+		newContent = newContent.replace(inlineTagRegex, `#${leafTag}`);
+		modified = true;
 	}
 
 	if (modified) {
-		const newContent = content.slice(0, bodyStart) + newBody;
 		await plugin.app.vault.modify(file, newContent);
 	}
 
 	return modified;
-}
-
-/**
- * Escapes special regex characters in a string.
- */
-function escapeRegex(str: string): string {
-	return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

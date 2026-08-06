@@ -56,7 +56,7 @@ export function setupFileRenameSync(plugin: TaggableTagsPlugin): void {
 				const newTagFromFilename = plugin.tagIndex.unsanitizeTagName(file.basename);
 				const normalizedNewTag = plugin.tagIndex.normalizeTag(newTagFromFilename);
 				
-				if (currentTag && normalizedNewTag !== plugin.tagIndex.normalizeTag(currentTag)) {
+				if (currentTag && !plugin.tagIndex.tagsMatch(normalizedNewTag, currentTag)) {
 					// Mark as plugin-initiated to avoid loops
 					markPluginInitiatedChange(file.path);
 					
@@ -145,7 +145,7 @@ export function setupFileRenameSync(plugin: TaggableTagsPlugin): void {
 			}
 
 			// Check if the tag property value changed
-			if (normalizedCurrent && normalizedPrevious && normalizedCurrent !== normalizedPrevious) {
+			if (normalizedCurrent && normalizedPrevious && !plugin.tagIndex.tagsMatch(normalizedCurrent, normalizedPrevious)) {
 				
 				// Mark as plugin-initiated to avoid loops
 				markPluginInitiatedChange(file.path);
@@ -160,8 +160,8 @@ export function setupFileRenameSync(plugin: TaggableTagsPlugin): void {
 
 					// If syncFileNamesWithTags is enabled, rename the file to match the new tag
 					if (plugin.settings.syncFileNamesWithTags) {
-						const sanitizedTagName = plugin.tagIndex.sanitizeTagName(normalizedCurrent);
-						const newFileName = `${sanitizedTagName}.md`;
+						const displayName = plugin.tagIndex.toDisplayName(normalizedCurrent);
+						const newFileName = `${displayName}.md`;
 						const currentDir = file.parent?.path || '';
 						const newPath = normalizePath(currentDir ? `${currentDir}/${newFileName}` : newFileName);
 						
@@ -304,9 +304,9 @@ async function replaceTagInFile(plugin: TaggableTagsPlugin, file: TFile, oldTag:
 	let newContent = content;
 	let changed = false;
 
-	// Replace inline tags: #oldTag -> #newTag
+	// Replace inline tags: #oldTag -> #newTag (case-insensitive)
 	// Make sure to handle word boundaries to avoid partial matches
-	const inlineRegex = new RegExp(`#${escapeRegex(oldTag)}(?![\\w-])`, 'g');
+	const inlineRegex = new RegExp(`#${escapeRegex(oldTag)}(?![\\w-])`, 'gi');
 	if (inlineRegex.test(content)) {
 		newContent = content.replace(inlineRegex, `#${newTag}`);
 		changed = true;
@@ -323,7 +323,7 @@ async function replaceTagInFile(plugin: TaggableTagsPlugin, file: TFile, oldTag:
 		// Handle YAML array format: tags: [tag1, tag2]
 		const yamlArrayRegex = new RegExp(
 			`(tags:\\s*\\[[^\\]]*)\\b${escapeRegex(oldTag)}\\b([^\\]]*\\])`,
-			'g'
+			'gi'
 		);
 		if (yamlArrayRegex.test(frontmatter)) {
 			newFrontmatter = frontmatter.replace(yamlArrayRegex, `$1${newTag}$2`);
@@ -333,7 +333,7 @@ async function replaceTagInFile(plugin: TaggableTagsPlugin, file: TFile, oldTag:
 		// Handle YAML list format
 		const yamlListRegex = new RegExp(
 			`(^\\s*-\\s*)${escapeRegex(oldTag)}(\\s*$)`,
-			'gm'
+			'gim'
 		);
 		if (yamlListRegex.test(newFrontmatter)) {
 			newFrontmatter = newFrontmatter.replace(yamlListRegex, `$1${newTag}$2`);

@@ -1,5 +1,6 @@
 import { TFile } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { filterSafeParentTags } from './cycle-prevention';
 
 /**
  * Parse YAML frontmatter from file content.
@@ -16,14 +17,12 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 	const frontmatterStr = match[1];
 	const body = match[2];
 	
-	// Simple YAML parsing for our use case
 	const frontmatter: Record<string, unknown> = {};
 	const lines = frontmatterStr.split('\n');
 	let currentKey: string | null = null;
 	let currentArray: string[] | null = null;
 	
 	for (const line of lines) {
-		// Check for array item
 		if (line.match(/^\s+-\s+/)) {
 			if (currentArray !== null) {
 				const value = line.replace(/^\s+-\s+/, '').trim();
@@ -32,10 +31,8 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 			continue;
 		}
 		
-		// Check for key: value
 		const keyValueMatch = line.match(/^(\S+):\s*(.*)$/);
 		if (keyValueMatch) {
-			// Save previous array if any
 			if (currentKey && currentArray !== null) {
 				frontmatter[currentKey] = currentArray;
 			}
@@ -43,12 +40,10 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 			currentKey = keyValueMatch[1];
 			const value = keyValueMatch[2].trim();
 			
-			// Check if it's an empty array or start of array
 			if (value === '[]') {
 				frontmatter[currentKey] = [];
 				currentArray = null;
 			} else if (value === '') {
-				// Could be start of array
 				currentArray = [];
 			} else {
 				frontmatter[currentKey] = value;
@@ -57,7 +52,6 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 		}
 	}
 	
-	// Save last array if any
 	if (currentKey && currentArray !== null) {
 		frontmatter[currentKey] = currentArray;
 	}
@@ -89,102 +83,96 @@ function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
 	return lines.join('\n');
 }
 
+/** Normalize optional single parent or parent list into a string array. */
+function normalizeParentTags(
+	parentTagOrTags?: string | string[] | null
+): string[] {
+	if (!parentTagOrTags) return [];
+	if (Array.isArray(parentTagOrTags)) {
+		return parentTagOrTags.filter((t): t is string => typeof t === 'string' && t.length > 0);
+	}
+	return [parentTagOrTags];
+}
+
 /**
  * Generate content for a new tag file.
  * If a template file is configured and exists, uses it as a base.
  * Required properties (tag, tags, exception to) are added at the top if missing.
+ *
+ * @param parentTagOrTags Optional parent tag, or multiple parents for dual-parent tags
  */
 export async function generateTagFileContent(
 	plugin: TaggableTagsPlugin,
 	tagName: string,
-	parentTag?: string | null
+	parentTagOrTags?: string | string[] | null
 ): Promise<string> {
+	const parents = filterSafeParentTags(plugin, tagName, normalizeParentTags(parentTagOrTags));
 	const propName = plugin.settings.tagPropertyName;
 	const exceptionPropName = plugin.settings.exceptionToPropertyName;
 	const templatePath = plugin.settings.tagTemplateFile;
 	
-	// Check if template file is configured and exists
 	if (templatePath) {
 		const templateFile = plugin.app.vault.getAbstractFileByPath(templatePath);
 		if (templateFile instanceof TFile) {
 			try {
 				const templateContent = await plugin.app.vault.read(templateFile);
-				return processTemplate(templateContent, tagName, parentTag, propName, exceptionPropName);
+				return processTemplate(templateContent, tagName, parents, propName, exceptionPropName);
 			} catch (error) {
-				// Template read failed, fall through to default
 				console.warn('Failed to read tag template file:', error);
 			}
 		}
 	}
 	
-	// Default content (no template)
-	return generateDefaultContent(tagName, parentTag, propName, exceptionPropName);
+	return generateDefaultContent(tagName, parents, propName, exceptionPropName);
 }
 
-/**
- * Process a template file content, adding required properties if missing.
- */
 function processTemplate(
 	templateContent: string,
 	tagName: string,
-	parentTag: string | null | undefined,
+	parentTags: string[],
 	propName: string,
 	exceptionPropName: string
 ): string {
 	const { frontmatter, body } = parseFrontmatter(templateContent);
 	
-	// Build the required properties that should be at the top
 	const requiredProps: Record<string, unknown> = {};
-	
-	// Tag property (always set to the new tag name)
 	requiredProps[propName] = tagName;
+	// Intended hierarchy parents only (already filtered by caller)
+	requiredProps['tags'] = [...parentTags];
 	
-	// Tags property (add parent if provided, or empty array)
-	if (parentTag) {
-		requiredProps['tags'] = [parentTag];
-	} else if (!frontmatter || !('tags' in frontmatter)) {
-		requiredProps['tags'] = [];
-	}
-	
-	// Exception to property (keep from template or add empty)
 	if (!frontmatter || !(exceptionPropName in frontmatter)) {
 		requiredProps[exceptionPropName] = [];
 	}
 	
-	// Merge: required props first, then template props (excluding ones we're overriding)
 	const mergedFrontmatter: Record<string, unknown> = { ...requiredProps };
 	
 	if (frontmatter) {
 		for (const [key, value] of Object.entries(frontmatter)) {
-			// Don't override the tag property (it must be the new tag name)
 			if (key === propName) continue;
-			// Don't override tags if we set a parent
-			if (key === 'tags' && parentTag) continue;
-			// Add other properties
+			if (key === 'tags') continue;
 			if (!(key in mergedFrontmatter)) {
 				mergedFrontmatter[key] = value;
 			}
 		}
 	}
 	
-	// Rebuild the content
 	const newFrontmatter = serializeFrontmatter(mergedFrontmatter);
 	return `---\n${newFrontmatter}\n---\n${body}`;
 }
 
-/**
- * Generate default tag file content (when no template is used).
- */
 function generateDefaultContent(
 	tagName: string,
-	parentTag: string | null | undefined,
+	parentTags: string[],
 	propName: string,
 	exceptionPropName: string
 ): string {
 	let content = `---\n${propName}: ${tagName}\n`;
 	
-	if (parentTag) {
-		content += `tags:\n  - ${parentTag}\n`;
+	if (parentTags.length > 0) {
+		content += `tags:\n`;
+		for (const parent of parentTags) {
+			content += `  - ${parent}\n`;
+		}
 	} else {
 		content += `tags: []\n`;
 	}
@@ -198,50 +186,35 @@ function generateDefaultContent(
 /**
  * Add required tag properties to an existing file's frontmatter.
  * Used when converting an existing file to a tag file.
- * 
- * @param plugin The plugin instance
- * @param file The file to modify
- * @param tagName The tag name to set
- * @param parentTag Optional parent tag to add to the tags array
+ *
+ * Hierarchy parents come only from the caller-supplied list (after cycle filters).
+ * Leftover content tags on the note are not preserved as parents — that caused
+ * cycles like Courts ↔ Courts_Law after flatten left the compound on the note.
+ *
+ * @param parentTagOrTags Optional parent tag, or multiple parents for dual-parent tags
  */
 export async function addTagPropertiesToFile(
 	plugin: TaggableTagsPlugin,
 	file: TFile,
 	tagName: string,
-	parentTag?: string | null
+	parentTagOrTags?: string | string[] | null
 ): Promise<void> {
+	const parents = filterSafeParentTags(plugin, tagName, normalizeParentTags(parentTagOrTags));
 	const propName = plugin.settings.tagPropertyName;
 	const exceptionPropName = plugin.settings.exceptionToPropertyName;
 	
 	const content = await plugin.app.vault.read(file);
 	const { frontmatter, body } = parseFrontmatter(content);
 	
-	// Build the required properties
 	const requiredProps: Record<string, unknown> = {};
 	requiredProps[propName] = tagName;
-	
-	// Handle tags array - may need to add parent tag
-	if (!frontmatter || !('tags' in frontmatter)) {
-		requiredProps['tags'] = parentTag ? [parentTag] : [];
-	} else if (parentTag) {
-		// Existing tags array - add parent if not already present
-		const existingTags = Array.isArray(frontmatter.tags) ? frontmatter.tags : [];
-		const normalizedParent = plugin.settings.forceLowercase ? parentTag.toLowerCase() : parentTag;
-		const hasParent = existingTags.some((t: unknown) => {
-			if (typeof t !== 'string') return false;
-			const normalizedT = plugin.settings.forceLowercase ? t.toLowerCase() : t;
-			return normalizedT === normalizedParent;
-		});
-		if (!hasParent) {
-			requiredProps['tags'] = [parentTag, ...existingTags];
-		}
-	}
+	// Intended parents only — never merge prior tags: entries as hierarchy parents
+	requiredProps['tags'] = [...parents];
 	
 	if (!frontmatter || !(exceptionPropName in frontmatter)) {
 		requiredProps[exceptionPropName] = [];
 	}
 	
-	// Merge: required props first, then existing props
 	const mergedFrontmatter: Record<string, unknown> = { ...requiredProps };
 	
 	if (frontmatter) {
@@ -252,7 +225,6 @@ export async function addTagPropertiesToFile(
 		}
 	}
 	
-	// Rebuild and save
 	const newFrontmatter = serializeFrontmatter(mergedFrontmatter);
 	const newContent = `---\n${newFrontmatter}\n---\n${body}`;
 	

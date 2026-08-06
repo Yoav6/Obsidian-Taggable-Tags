@@ -1,26 +1,39 @@
 import { App, TFile, normalizePath } from 'obsidian';
 import type { TaggableTagsSettings } from '../settings';
+import {
+	toCanonicalTagName,
+	toComparisonKey,
+	toDisplayName,
+	sanitizeForFilesystem,
+	unsanitizeFromFilesystem,
+	namesMatch,
+} from '../utils/tag-naming';
 
 /**
  * Maintains a mapping between tags used in the vault and their corresponding tag definition files.
+ *
+ * Internal maps are keyed by comparison key (case/separator-insensitive).
+ * Preferred canonical spellings are stored in canonicalByKey and returned by public APIs.
  */
 export class TagIndex {
 	private app: App;
 	private settings: TaggableTagsSettings;
 	
-	// tag name (without #) -> tag definition file
+	/** comparison key -> preferred canonical tag spelling */
+	private canonicalByKey: Map<string, string> = new Map();
+	// comparison key -> tag definition file
 	private tagToFile: Map<string, TFile | null> = new Map();
-	// file path -> tag name
+	// file path -> canonical tag name
 	private fileToTag: Map<string, string> = new Map();
-	// tag name -> parent tag names (from tag file frontmatter)
+	// comparison key -> parent comparison keys
 	private tagParents: Map<string, Set<string>> = new Map();
-	// tag name -> child tag names (inferred from parents)
+	// comparison key -> child comparison keys
 	private tagChildren: Map<string, Set<string>> = new Map();
-	// tag name -> files that have this tag
+	// comparison key -> files that have this tag
 	private tagToFiles: Map<string, Set<TFile>> = new Map();
-	// tag name -> tags it is an exception to (from "exception to" property)
+	// comparison key -> exception comparison keys
 	private tagExceptions: Map<string, Set<string>> = new Map();
-	// tags that are exclusive (have "all" in their exception to property)
+	// exclusive tags (comparison keys)
 	private exclusiveTags: Set<string> = new Set();
 
 	constructor(app: App, settings: TaggableTagsSettings) {
@@ -28,12 +41,57 @@ export class TagIndex {
 		this.settings = settings;
 	}
 
+	/** Comparison key for map lookups. */
+	private key(tag: string): string {
+		return toComparisonKey(tag, this.settings);
+	}
+
+	/** Remember first-seen settings-canonical spelling for a key. */
+	private remember(canonical: string): string {
+		const normalized = toCanonicalTagName(canonical, this.settings);
+		const k = this.key(normalized);
+		if (!this.canonicalByKey.has(k)) {
+			this.canonicalByKey.set(k, normalized);
+		}
+		return this.canonicalByKey.get(k)!;
+	}
+
 	/**
-	 * Normalize a tag name (lowercase if setting is enabled)
+	 * Prefer settings-canonical spelling (e.g. from a tag file property).
+	 * Always stores the configured-separator form so hyphen/underscore/space variants unify.
+	 */
+	private rememberPreferred(canonical: string): string {
+		const normalized = toCanonicalTagName(canonical, this.settings);
+		const k = this.key(normalized);
+		this.canonicalByKey.set(k, normalized);
+		return normalized;
+	}
+
+	/** Resolve any tag form to the preferred canonical spelling. */
+	private resolve(tagOrKey: string): string {
+		const k = this.key(tagOrKey);
+		return this.canonicalByKey.get(k) ?? toCanonicalTagName(tagOrKey, this.settings);
+	}
+
+	/**
+	 * Canonical tag name for storage/application: spaces → separator, case preserved.
 	 */
 	normalizeTag(tag: string): string {
-		const tagName = tag.startsWith('#') ? tag.slice(1) : tag;
-		return this.settings.forceLowercase ? tagName.toLowerCase() : tagName;
+		return toCanonicalTagName(tag, this.settings);
+	}
+
+	/**
+	 * Case/separator-insensitive equality.
+	 */
+	tagsMatch(a: string, b: string): boolean {
+		return namesMatch(a, b, this.settings);
+	}
+
+	/**
+	 * Display name for a tag note basename or folder segment.
+	 */
+	toDisplayName(tag: string): string {
+		return toDisplayName(tag, this.settings);
 	}
 
 	/**
@@ -94,37 +152,18 @@ export class TagIndex {
 	}
 
 	/**
-	 * Sanitize a tag name for use as a filename.
-	 * Handles special characters that aren't allowed in filenames.
+	 * Sanitize a tag name for use as a filename (filesystem-illegal chars only).
+	 * Prefer toDisplayName() when creating note/folder names so separator settings apply.
 	 */
 	sanitizeTagName(tag: string): string {
-		// Replace characters that are problematic for filesystems
-		return tag
-			.replace(/\//g, '--slash--')
-			.replace(/\\/g, '--backslash--')
-			.replace(/:/g, '--colon--')
-			.replace(/\*/g, '--star--')
-			.replace(/\?/g, '--question--')
-			.replace(/"/g, '--quote--')
-			.replace(/</g, '--lt--')
-			.replace(/>/g, '--gt--')
-			.replace(/\|/g, '--pipe--');
+		return sanitizeForFilesystem(tag);
 	}
 
 	/**
-	 * Reverse the sanitization to get the original tag name
+	 * Reverse filesystem sanitization.
 	 */
 	unsanitizeTagName(filename: string): string {
-		return filename
-			.replace(/--slash--/g, '/')
-			.replace(/--backslash--/g, '\\')
-			.replace(/--colon--/g, ':')
-			.replace(/--star--/g, '*')
-			.replace(/--question--/g, '?')
-			.replace(/--quote--/g, '"')
-			.replace(/--lt--/g, '<')
-			.replace(/--gt--/g, '>')
-			.replace(/--pipe--/g, '|');
+		return unsanitizeFromFilesystem(filename);
 	}
 
 	/**
@@ -132,13 +171,11 @@ export class TagIndex {
 	 */
 	getAllTags(): string[] {
 		const allTags = new Set<string>();
-		// Add tags that are used in files
-		for (const tag of this.tagToFiles.keys()) {
-			allTags.add(tag);
+		for (const k of this.tagToFiles.keys()) {
+			allTags.add(this.resolve(k));
 		}
-		// Add tags that have tag files (even if not used)
-		for (const tag of this.tagToFile.keys()) {
-			allTags.add(tag);
+		for (const k of this.tagToFile.keys()) {
+			allTags.add(this.resolve(k));
 		}
 		return Array.from(allTags);
 	}
@@ -147,8 +184,7 @@ export class TagIndex {
 	 * Get the tag file for a given tag
 	 */
 	getTagFile(tag: string): TFile | null {
-		const tagName = this.normalizeTag(tag);
-		return this.tagToFile.get(tagName) ?? null;
+		return this.tagToFile.get(this.key(tag)) ?? null;
 	}
 
 	/**
@@ -162,18 +198,16 @@ export class TagIndex {
 	 * Get parent tags for a given tag (from tag file frontmatter)
 	 */
 	getParentTags(tag: string): string[] {
-		const tagName = this.normalizeTag(tag);
-		const parents = this.tagParents.get(tagName);
-		return parents ? Array.from(parents) : [];
+		const parents = this.tagParents.get(this.key(tag));
+		return parents ? Array.from(parents).map(k => this.resolve(k)) : [];
 	}
 
 	/**
 	 * Get child tags for a given tag (tags that have this tag as parent)
 	 */
 	getChildTags(tag: string): string[] {
-		const tagName = this.normalizeTag(tag);
-		const children = this.tagChildren.get(tagName);
-		return children ? Array.from(children) : [];
+		const children = this.tagChildren.get(this.key(tag));
+		return children ? Array.from(children).map(k => this.resolve(k)) : [];
 	}
 
 	/**
@@ -184,19 +218,18 @@ export class TagIndex {
 	getRootTags(): string[] {
 		const result: string[] = [];
 		const allTags = this.getAllTags();
-		const circularTags = this.getCircularTags();
+		const circularKeys = new Set(
+			Array.from(this.getCircularTags()).map(t => this.key(t))
+		);
 		
 		for (const tag of allTags) {
-			const parents = this.tagParents.get(tag);
-			// A tag is a root if:
-			// - it has no parents, OR
-			// - it's part of a circular chain, OR
-			// - it's an exclusive tag (its children only show under it)
-			if (!parents || parents.size === 0 || circularTags.has(tag) || this.exclusiveTags.has(tag)) {
+			const k = this.key(tag);
+			const parents = this.tagParents.get(k);
+			if (!parents || parents.size === 0 || circularKeys.has(k) || this.exclusiveTags.has(k)) {
 				result.push(tag);
 			}
 		}
-		return result.sort();
+		return result.sort((a, b) => a.localeCompare(b));
 	}
 
 	/**
@@ -227,16 +260,17 @@ export class TagIndex {
 	 * Detect if following children from a tag leads back to itself (cycle detection)
 	 */
 	private detectCycleFromTag(tag: string, visited: Set<string>): boolean {
-		if (visited.has(tag)) {
-			return true; // Found a cycle
+		const k = this.key(tag);
+		if (visited.has(k)) {
+			return true;
 		}
 		
-		visited.add(tag);
-		const children = this.tagChildren.get(tag);
+		visited.add(k);
+		const children = this.tagChildren.get(k);
 		
 		if (children) {
-			for (const child of children) {
-				if (this.detectCycleFromTag(child, new Set(visited))) {
+			for (const childKey of children) {
+				if (this.detectCycleFromTag(childKey, new Set(visited))) {
 					return true;
 				}
 			}
@@ -249,21 +283,21 @@ export class TagIndex {
 	 * Collect all tags that are part of a cycle starting from a given tag
 	 */
 	private collectCycleTags(tag: string, path: Set<string>, result: Set<string>): void {
-		if (path.has(tag)) {
-			// Found cycle - add all tags in the current path
+		const k = this.key(tag);
+		if (path.has(k)) {
 			for (const t of path) {
-				result.add(t);
+				result.add(this.resolve(t));
 			}
-			result.add(tag);
+			result.add(this.resolve(k));
 			return;
 		}
 		
-		path.add(tag);
-		const children = this.tagChildren.get(tag);
+		path.add(k);
+		const children = this.tagChildren.get(k);
 		
 		if (children) {
-			for (const child of children) {
-				this.collectCycleTags(child, new Set(path), result);
+			for (const childKey of children) {
+				this.collectCycleTags(childKey, new Set(path), result);
 			}
 		}
 	}
@@ -297,7 +331,8 @@ export class TagIndex {
 			const wikiLinkMatch = trimmed.match(/^\[\[([^\]]+)\]\]$/);
 			if (wikiLinkMatch) {
 				const tagName = this.normalizeTag(wikiLinkMatch[1]);
-				result.tags.add(tagName);
+				this.remember(tagName);
+				result.tags.add(this.key(tagName));
 			}
 		}
 		
@@ -308,14 +343,15 @@ export class TagIndex {
 	 * Get child tags, optionally excluding tags already in the ancestor path (for cycle handling)
 	 */
 	getChildTagsExcluding(tag: string, excludeAncestors?: Set<string>): string[] {
-		const tagName = this.normalizeTag(tag);
-		const children = this.tagChildren.get(tagName);
+		const children = this.tagChildren.get(this.key(tag));
 		if (!children) return [];
 		
+		const resolved = Array.from(children).map(k => this.resolve(k));
 		if (excludeAncestors) {
-			return Array.from(children).filter(child => !excludeAncestors.has(child));
+			const excludeKeys = new Set(Array.from(excludeAncestors).map(t => this.key(t)));
+			return resolved.filter(child => !excludeKeys.has(this.key(child)));
 		}
-		return Array.from(children);
+		return resolved;
 	}
 
 	/**
@@ -323,19 +359,16 @@ export class TagIndex {
 	 * Exception tags don't show their children under the excepted tags.
 	 */
 	getExceptionTags(tag: string): string[] {
-		const tagName = this.normalizeTag(tag);
-		const exceptions = this.tagExceptions.get(tagName);
-		return exceptions ? Array.from(exceptions) : [];
+		const exceptions = this.tagExceptions.get(this.key(tag));
+		return exceptions ? Array.from(exceptions).map(k => this.resolve(k)) : [];
 	}
 
 	/**
 	 * Check if a tag is an exception to a specific other tag.
 	 */
 	isExceptionTo(tag: string, exceptedTag: string): boolean {
-		const tagName = this.normalizeTag(tag);
-		const exceptedTagName = this.normalizeTag(exceptedTag);
-		const exceptions = this.tagExceptions.get(tagName);
-		return exceptions ? exceptions.has(exceptedTagName) : false;
+		const exceptions = this.tagExceptions.get(this.key(tag));
+		return exceptions ? exceptions.has(this.key(exceptedTag)) : false;
 	}
 
 	/**
@@ -343,25 +376,22 @@ export class TagIndex {
 	 * Exclusive tags' children only show under the exclusive tag itself.
 	 */
 	isExclusiveTag(tag: string): boolean {
-		const tagName = this.normalizeTag(tag);
-		return this.exclusiveTags.has(tagName);
+		return this.exclusiveTags.has(this.key(tag));
 	}
 
 	/**
 	 * Get all exclusive tags.
 	 */
 	getExclusiveTags(): string[] {
-		return Array.from(this.exclusiveTags);
+		return Array.from(this.exclusiveTags).map(k => this.resolve(k));
 	}
 
 	/**
 	 * Get all files that have a specific tag (excludes registry note)
 	 */
 	getFilesWithTag(tag: string): TFile[] {
-		const tagName = this.normalizeTag(tag);
-		const files = this.tagToFiles.get(tagName);
+		const files = this.tagToFiles.get(this.key(tag));
 		if (!files) return [];
-		// Filter out the registry note only
 		return Array.from(files).filter(file => !this.isTagRegistryNote(file));
 	}
 
@@ -421,22 +451,23 @@ export class TagIndex {
 	 */
 	getTagsWithoutFiles(): string[] {
 		const result: string[] = [];
+		const seen = new Set<string>();
 		
-		// Check tags used in regular files
-		for (const tag of this.tagToFiles.keys()) {
-			if (!this.tagToFile.has(tag) || this.tagToFile.get(tag) === null) {
-				result.push(tag);
-			}
-		}
-		
-		// Also check parent tags referenced in tag files
-		// These are stored in tagChildren (as keys)
-		for (const parentTag of this.tagChildren.keys()) {
-			if (!this.tagToFile.has(parentTag) || this.tagToFile.get(parentTag) === null) {
-				if (!result.includes(parentTag)) {
-					result.push(parentTag);
+		const addIfMissing = (k: string) => {
+			if (!this.tagToFile.has(k) || this.tagToFile.get(k) === null) {
+				if (!seen.has(k)) {
+					seen.add(k);
+					result.push(this.resolve(k));
 				}
 			}
+		};
+
+		for (const k of this.tagToFiles.keys()) {
+			addIfMissing(k);
+		}
+		
+		for (const parentKey of this.tagChildren.keys()) {
+			addIfMissing(parentKey);
 		}
 		
 		return result;
@@ -448,7 +479,7 @@ export class TagIndex {
 	getFilesWithoutTags(): TFile[] {
 		const result: TFile[] = [];
 		for (const [path, tag] of this.fileToTag) {
-			const filesWithTag = this.tagToFiles.get(tag);
+			const filesWithTag = this.tagToFiles.get(this.key(tag));
 			if (!filesWithTag || filesWithTag.size === 0) {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				if (file instanceof TFile) {
@@ -463,10 +494,8 @@ export class TagIndex {
 	 * Get the usage count for a tag (number of files using it, excludes registry note)
 	 */
 	getTagCount(tag: string): number {
-		const tagName = this.normalizeTag(tag);
-		const files = this.tagToFiles.get(tagName);
+		const files = this.tagToFiles.get(this.key(tag));
 		if (!files) return 0;
-		// Count all files except the registry note
 		let count = 0;
 		for (const file of files) {
 			if (!this.isTagRegistryNote(file)) {
@@ -481,9 +510,9 @@ export class TagIndex {
 	 */
 	getTagsForFile(file: TFile): string[] {
 		const tags: string[] = [];
-		for (const [tag, files] of this.tagToFiles.entries()) {
+		for (const [k, files] of this.tagToFiles.entries()) {
 			if (files.has(file)) {
-				tags.push(tag);
+				tags.push(this.resolve(k));
 			}
 		}
 		return tags;
@@ -494,6 +523,7 @@ export class TagIndex {
 	 */
 	async rebuild(): Promise<void> {
 		// Clear current state
+		this.canonicalByKey.clear();
 		this.tagToFile.clear();
 		this.fileToTag.clear();
 		this.tagParents.clear();
@@ -505,8 +535,8 @@ export class TagIndex {
 		// Get all markdown files
 		const files = this.app.vault.getMarkdownFiles();
 		
-		// Track tag files by tag name to handle duplicates (select most recently created)
-		const tagFileCandidates: Map<string, TFile[]> = new Map();
+		// Track tag files by comparison key to handle duplicates (select most recently created)
+		const tagFileCandidates: Map<string, { file: TFile; canonical: string }[]> = new Map();
 		
 		// First pass: identify all tag files and collect tags from regular files
 		for (const file of files) {
@@ -520,27 +550,27 @@ export class TagIndex {
 				// Process as tag definition file
 				const tagName = this.fileToTagName(file);
 				if (tagName) {
-					const normalizedTag = this.normalizeTag(tagName);
+					const canonical = this.normalizeTag(tagName);
+					const k = this.key(canonical);
 					
-					// Collect candidates for this tag
-					if (!tagFileCandidates.has(normalizedTag)) {
-						tagFileCandidates.set(normalizedTag, []);
+					if (!tagFileCandidates.has(k)) {
+						tagFileCandidates.set(k, []);
 					}
-					tagFileCandidates.get(normalizedTag)!.push(file);
+					tagFileCandidates.get(k)!.push({ file, canonical });
 				}
 				// Also track the tags used IN this tag file (for parent relationships and unused detection)
-				// These won't be counted in getTagCount or shown in getFilesWithTag
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (cache?.frontmatter?.tags) {
 					const fmTags = cache.frontmatter.tags;
 					if (Array.isArray(fmTags)) {
 						for (const tag of fmTags) {
 							if (typeof tag === 'string' && !tag.includes('/')) {
-								const normalizedTag = this.normalizeTag(tag);
-								if (!this.tagToFiles.has(normalizedTag)) {
-									this.tagToFiles.set(normalizedTag, new Set());
+								const canonical = this.remember(this.normalizeTag(tag));
+								const k = this.key(canonical);
+								if (!this.tagToFiles.has(k)) {
+									this.tagToFiles.set(k, new Set());
 								}
-								this.tagToFiles.get(normalizedTag)!.add(file);
+								this.tagToFiles.get(k)!.add(file);
 							}
 						}
 					}
@@ -552,7 +582,7 @@ export class TagIndex {
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
 
-			const fileTags = new Set<string>();
+			const fileTagKeys = new Set<string>();
 
 			// Get tags from frontmatter
 			if (cache.frontmatter?.tags) {
@@ -560,8 +590,8 @@ export class TagIndex {
 				if (Array.isArray(fmTags)) {
 					for (const tag of fmTags) {
 						if (typeof tag === 'string' && !tag.includes('/')) {
-							const normalizedTag = this.normalizeTag(tag);
-							fileTags.add(normalizedTag);
+							const canonical = this.remember(this.normalizeTag(tag));
+							fileTagKeys.add(this.key(canonical));
 						}
 					}
 				}
@@ -570,97 +600,89 @@ export class TagIndex {
 			// Get inline tags
 			if (cache.tags) {
 				for (const tagCache of cache.tags) {
-					// tagCache.tag includes the # prefix
 					let tagName = tagCache.tag.startsWith('#') ? tagCache.tag.slice(1) : tagCache.tag;
-					// Skip nested tags for now
 					if (tagName.includes('/')) {
 						continue;
 					}
-					const normalizedTag = this.normalizeTag(tagName);
-					fileTags.add(normalizedTag);
+					const canonical = this.remember(this.normalizeTag(tagName));
+					fileTagKeys.add(this.key(canonical));
 				}
 			}
 
-			// Update file mappings
-			for (const tag of fileTags) {
-				// Track which files have this tag
-				if (!this.tagToFiles.has(tag)) {
-					this.tagToFiles.set(tag, new Set());
+			for (const k of fileTagKeys) {
+				if (!this.tagToFiles.has(k)) {
+					this.tagToFiles.set(k, new Set());
 				}
-				this.tagToFiles.get(tag)!.add(file);
+				this.tagToFiles.get(k)!.add(file);
 			}
 		}
 
 		// Select the most recently created file for each tag (handle duplicates)
-		for (const [normalizedTag, candidates] of tagFileCandidates) {
-			// Sort by creation time (most recent first)
-			candidates.sort((a, b) => b.stat.ctime - a.stat.ctime);
-			const selectedFile = candidates[0];
+		for (const [k, candidates] of tagFileCandidates) {
+			candidates.sort((a, b) => b.file.stat.ctime - a.file.stat.ctime);
+			const selected = candidates[0];
+			const canonical = this.rememberPreferred(selected.canonical);
 			
-			this.tagToFile.set(normalizedTag, selectedFile);
-			this.fileToTag.set(selectedFile.path, normalizedTag);
+			this.tagToFile.set(k, selected.file);
+			this.fileToTag.set(selected.file.path, canonical);
 
-			// Get parent tags from this tag file's frontmatter
-			const cache = this.app.metadataCache.getFileCache(selectedFile);
+			const cache = this.app.metadataCache.getFileCache(selected.file);
 			if (cache?.frontmatter?.tags) {
 				const parentTags = cache.frontmatter.tags;
 				if (Array.isArray(parentTags)) {
 					const parents = new Set<string>();
 					for (const parent of parentTags) {
 						if (typeof parent === 'string') {
-							const normalizedParent = this.normalizeTag(parent);
-							parents.add(normalizedParent);
+							const parentCanonical = this.remember(this.normalizeTag(parent));
+							const parentKey = this.key(parentCanonical);
+							parents.add(parentKey);
 							
-							// Add this tag as a child of the parent
-							if (!this.tagChildren.has(normalizedParent)) {
-								this.tagChildren.set(normalizedParent, new Set());
+							if (!this.tagChildren.has(parentKey)) {
+								this.tagChildren.set(parentKey, new Set());
 							}
-							this.tagChildren.get(normalizedParent)!.add(normalizedTag);
+							this.tagChildren.get(parentKey)!.add(k);
 						}
 					}
-					this.tagParents.set(normalizedTag, parents);
+					this.tagParents.set(k, parents);
 				}
 			}
 
-			// Get exception tags from this tag file's frontmatter
 			if (cache?.frontmatter) {
 				const exceptionPropName = this.settings.exceptionToPropertyName;
 				const exceptionValue = cache.frontmatter[exceptionPropName];
 				if (exceptionValue) {
 					const exceptions = this.parseExceptionProperty(exceptionValue);
 					if (exceptions.tags.size > 0) {
-						this.tagExceptions.set(normalizedTag, exceptions.tags);
+						this.tagExceptions.set(k, exceptions.tags);
 					}
 					if (exceptions.isExclusive) {
-						this.exclusiveTags.add(normalizedTag);
+						this.exclusiveTags.add(k);
 					}
 				}
 			}
 		}
 
 		// Also add entries for tags that exist but have null files
-		for (const tag of this.tagToFiles.keys()) {
-			if (!this.tagToFile.has(tag)) {
-				this.tagToFile.set(tag, null);
+		for (const k of this.tagToFiles.keys()) {
+			if (!this.tagToFile.has(k)) {
+				this.tagToFile.set(k, null);
 			}
 		}
 
-		// Ensure all tags have parent/children sets (even if empty)
-		// Include both tags from files and tags from tag files
-		const allTagNames = new Set<string>();
-		for (const tag of this.tagToFiles.keys()) {
-			allTagNames.add(tag);
+		const allKeys = new Set<string>();
+		for (const k of this.tagToFiles.keys()) {
+			allKeys.add(k);
 		}
-		for (const tag of this.tagToFile.keys()) {
-			allTagNames.add(tag);
+		for (const k of this.tagToFile.keys()) {
+			allKeys.add(k);
 		}
 		
-		for (const tag of allTagNames) {
-			if (!this.tagParents.has(tag)) {
-				this.tagParents.set(tag, new Set());
+		for (const k of allKeys) {
+			if (!this.tagParents.has(k)) {
+				this.tagParents.set(k, new Set());
 			}
-			if (!this.tagChildren.has(tag)) {
-				this.tagChildren.set(tag, new Set());
+			if (!this.tagChildren.has(k)) {
+				this.tagChildren.set(k, new Set());
 			}
 		}
 	}
@@ -674,9 +696,9 @@ export class TagIndex {
 	onTagFileCreated(file: TFile, tagName?: string): void {
 		const resolvedTagName = tagName ?? this.fileToTagName(file);
 		if (resolvedTagName) {
-			const normalizedTag = this.normalizeTag(resolvedTagName);
-			this.tagToFile.set(normalizedTag, file);
-			this.fileToTag.set(file.path, normalizedTag);
+			const canonical = this.rememberPreferred(this.normalizeTag(resolvedTagName));
+			this.tagToFile.set(this.key(canonical), file);
+			this.fileToTag.set(file.path, canonical);
 		}
 	}
 
@@ -686,7 +708,7 @@ export class TagIndex {
 	onTagFileDeleted(path: string): void {
 		const tagName = this.fileToTag.get(path);
 		if (tagName) {
-			this.tagToFile.set(tagName, null);
+			this.tagToFile.set(this.key(tagName), null);
 			this.fileToTag.delete(path);
 		}
 	}
@@ -695,18 +717,16 @@ export class TagIndex {
 	 * Update the index when a tag file's tag property changes
 	 */
 	onTagPropertyChanged(file: TFile, oldTag: string | null): void {
-		// Remove old mapping if it existed
 		if (oldTag) {
-			this.tagToFile.set(oldTag, null);
+			this.tagToFile.set(this.key(oldTag), null);
 		}
 		this.fileToTag.delete(file.path);
 
-		// Add new mapping
 		const newTag = this.fileToTagName(file);
 		if (newTag) {
-			const normalizedTag = this.normalizeTag(newTag);
-			this.tagToFile.set(normalizedTag, file);
-			this.fileToTag.set(file.path, normalizedTag);
+			const canonical = this.rememberPreferred(this.normalizeTag(newTag));
+			this.tagToFile.set(this.key(canonical), file);
+			this.fileToTag.set(file.path, canonical);
 		}
 	}
 
@@ -714,14 +734,11 @@ export class TagIndex {
 	 * Update the index when a tag file is renamed (file path changed)
 	 */
 	onTagFileRenamed(file: TFile, oldPath: string): void {
-		// Get the tag from the old path mapping
 		const tag = this.fileToTag.get(oldPath);
 		if (tag) {
-			// Update the file path mapping
 			this.fileToTag.delete(oldPath);
 			this.fileToTag.set(file.path, tag);
-			// The tag -> file mapping stays the same since the file object is updated
-			this.tagToFile.set(tag, file);
+			this.tagToFile.set(this.key(tag), file);
 		}
 	}
 

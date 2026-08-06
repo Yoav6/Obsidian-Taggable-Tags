@@ -278,8 +278,8 @@ class RenameTagModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTag)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTag.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
@@ -427,15 +427,12 @@ class CreateChildTagModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTagName)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTagName.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
-		// Normalize if needed
-		if (this.plugin.settings.forceLowercase) {
-			newTagName = newTagName.toLowerCase();
-		}
+		newTagName = this.plugin.tagIndex.normalizeTag(newTagName);
 
 		// Check if tag already exists
 		const existingFile = this.plugin.tagIndex.getTagFile(newTagName);
@@ -561,15 +558,12 @@ class CreateParentTagModal extends Modal {
 		}
 
 		// Validate tag name (no spaces, no special chars that would break tags)
-		if (/[\s#]/.test(newTagName)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTagName.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
-		// Normalize if needed
-		if (this.plugin.settings.forceLowercase) {
-			newTagName = newTagName.toLowerCase();
-		}
+		newTagName = this.plugin.tagIndex.normalizeTag(newTagName);
 
 		// Check if tag already exists
 		const existingFile = this.plugin.tagIndex.getTagFile(newTagName);
@@ -828,15 +822,12 @@ class ReplaceWithChildTagModal extends Modal {
 		}
 
 		// Validate tag name
-		if (/[\s#]/.test(newTagName)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTagName.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
-		// Normalize if needed
-		if (this.plugin.settings.forceLowercase) {
-			newTagName = newTagName.toLowerCase();
-		}
+		newTagName = this.plugin.tagIndex.normalizeTag(newTagName);
 
 		// Check if tag already exists
 		const existingFile = this.plugin.tagIndex.getTagFile(newTagName);
@@ -960,15 +951,12 @@ class ReplaceWithParentTagModal extends Modal {
 		}
 
 		// Validate tag name
-		if (/[\s#]/.test(newTagName)) {
-			new Notice('Tag name cannot contain spaces or #');
+		if (newTagName.includes('#')) {
+			new Notice('Tag name cannot contain #');
 			return;
 		}
 
-		// Normalize if needed
-		if (this.plugin.settings.forceLowercase) {
-			newTagName = newTagName.toLowerCase();
-		}
+		newTagName = this.plugin.tagIndex.normalizeTag(newTagName);
 
 		// Check if tag already exists
 		const existingFile = this.plugin.tagIndex.getTagFile(newTagName);

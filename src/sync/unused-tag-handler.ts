@@ -167,8 +167,8 @@ async function handleUnusedTag(plugin: TaggableTagsPlugin, tagFile: TFile, tagNa
 					
 					// If syncFileNamesWithTags is enabled, also rename the file
 					if (plugin.settings.syncFileNamesWithTags) {
-						const sanitizedTagName = plugin.tagIndex.sanitizeTagName(normalizedNewTag);
-						const newFileName = `${sanitizedTagName}.md`;
+						const displayName = plugin.tagIndex.toDisplayName(normalizedNewTag);
+						const newFileName = `${displayName}.md`;
 						const currentDir = tagFile.parent?.path || '';
 						const newPath = normalizePath(currentDir ? `${currentDir}/${newFileName}` : newFileName);
 						

@@ -14,25 +14,7 @@ export function setupAutoCreate(plugin: TaggableTagsPlugin): void {
 			if (!plugin.settings.autoCreateFiles) {
 				return;
 			}
-
-			// Rebuild the index to get current state
-			await plugin.tagIndex.rebuild();
-
-			// Find tags without files
-			const tagsWithoutFiles = plugin.tagIndex.getTagsWithoutFiles();
-			
-			let createdAny = false;
-			for (const tag of tagsWithoutFiles) {
-				const file = await createTagFile(plugin, tag);
-				if (file) {
-					createdAny = true;
-				}
-			}
-			
-			// Update the tag registry if any new tag files were created
-			if (createdAny) {
-				await plugin.updateTagRegistry();
-			}
+			await createMissingTagFiles(plugin);
 		},
 		1000, // 1 second debounce
 		true  // Run on leading edge as well
@@ -57,18 +39,41 @@ export function setupAutoCreate(plugin: TaggableTagsPlugin): void {
 }
 
 /**
+ * Give every tag that lacks a tag file one. Returns how many were created.
+ *
+ * This is the only tag-driven creation path — the folder sync and nested-tag flatten
+ * passes are keyed on folders and on `/` in a tag, so a plain tag used only inside
+ * notes is never reached by them.
+ */
+export async function createMissingTagFiles(plugin: TaggableTagsPlugin): Promise<number> {
+	// Rebuild the index to get current state
+	await plugin.tagIndex.rebuild();
+
+	let created = 0;
+	for (const tag of plugin.tagIndex.getTagsWithoutFiles()) {
+		const file = await createTagFile(plugin, tag);
+		if (file) {
+			created++;
+		}
+	}
+
+	if (created > 0) {
+		await plugin.updateTagRegistry();
+	}
+
+	return created;
+}
+
+/**
  * Creates a tag definition file for the given tag.
  */
 export async function createTagFile(plugin: TaggableTagsPlugin, tag: string): Promise<TFile | null> {
 	try {
-		// Normalize tag to lowercase if setting is enabled
-		const normalizedTag = plugin.settings.forceLowercase ? tag.toLowerCase() : tag;
+		const normalizedTag = plugin.tagIndex.normalizeTag(tag);
+		const displayName = plugin.tagIndex.toDisplayName(normalizedTag);
 		
-		// Sanitize the tag name for use as filename
-		const sanitizedTagName = plugin.tagIndex.sanitizeTagName(normalizedTag);
-		
-		// Create file in vault root with tag name as filename
-		const filePath = normalizePath(`${sanitizedTagName}.md`);
+		// Create file in vault root with display name as filename
+		const filePath = normalizePath(`${displayName}.md`);
 		
 		// Check if file already exists at the exact path
 		const existingFile = plugin.app.vault.getAbstractFileByPath(filePath);
@@ -79,7 +84,10 @@ export async function createTagFile(plugin: TaggableTagsPlugin, tag: string): Pr
 		// Check for existing files with matching names (if setting is not 'off')
 		const existingFileBehavior = plugin.settings.existingFileBehavior;
 		if (existingFileBehavior !== 'off') {
-			const matchingFile = findMatchingNonTagFile(plugin, normalizedTag);
+			const matchingFile = findMatchingNonTagFile(plugin, normalizedTag, {
+				onlyUnder: plugin.app.vault.getRoot(),
+				directChildOnly: true,
+			});
 			if (matchingFile) {
 				let useExisting = false;
 				
@@ -114,4 +122,3 @@ export async function createTagFile(plugin: TaggableTagsPlugin, tag: string): Pr
 		return null;
 	}
 }
-

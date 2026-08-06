@@ -110,12 +110,15 @@ export class MigrationPreviewModal extends Modal {
 			);
 		}
 
-		// Conflicts to resolve
-		if (this.preview.conflictsToResolve > 0) {
+		// Conflicts to resolve — list each planned rename
+		if (this.preview.conflictRenames.length > 0) {
 			this.renderSection(
 				changesContainer,
-				`Naming conflicts to resolve (${this.preview.conflictsToResolve})`,
-				[{ primary: `${this.preview.conflictsToResolve} items will be renamed to prevent circular relationships`, secondary: '' }]
+				`Naming conflicts to resolve (${this.preview.conflictRenames.length})`,
+				this.preview.conflictRenames.map((item) => ({
+					primary: item.path,
+					secondary: `#${item.fromName} → #${item.toName}`,
+				}))
 			);
 		}
 
@@ -159,7 +162,7 @@ export class MigrationPreviewModal extends Modal {
 
 	private getSummary(): { totalChanges: number } {
 		const totalChanges =
-			this.preview.conflictsToResolve +
+			this.preview.conflictRenames.length +
 			this.preview.nestedTagsToFlatten.length +
 			this.preview.tagFilesToCreate.length +
 			this.preview.tagsToAdd.length +

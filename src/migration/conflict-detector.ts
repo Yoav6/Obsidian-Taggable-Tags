@@ -1,11 +1,13 @@
 import { TFile, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import { namesMatch } from '../utils/name-matching';
+import { findMatchingFileInFolder } from '../utils/name-matching';
+import { toComparisonKey } from '../utils/tag-naming';
+import { findMisplacedMatchingNotes, uniqueNameForSource } from '../utils/cycle-prevention';
 
 /**
  * The type of source that would create a tag during migration.
  */
-export type TagSourceType = 'existing-tag' | 'folder' | 'nested-tag';
+export type TagSourceType = 'existing-tag' | 'folder' | 'nested-tag' | 'matching-note';
 
 /**
  * A source that would create a tag during migration.
@@ -23,6 +25,8 @@ export interface TagSource {
 	existingTagFile?: TFile;
 	/** For 'nested-tag' type: the full nested tag path (e.g., "media/games") */
 	nestedTagPath?: string;
+	/** For 'matching-note' type: a deep note whose basename matches an ancestor tag */
+	matchingNote?: TFile;
 }
 
 /**
@@ -64,6 +68,7 @@ export interface ConflictDetectionResult {
  * - Multiple folders with the same leaf name
  * - A folder with the same name as an existing tag file (in a different location)
  * - Nested tags that flatten to the same leaf name as a folder
+ * - A deep note whose basename matches an ancestor folder (e.g. Sociognosticism/Beliefs.md)
  * 
  * @param plugin The plugin instance
  * @param flattenNestedTags Whether nested tags will be flattened during migration
@@ -80,7 +85,7 @@ export function detectNamingConflicts(
 	for (const [name, sources] of sourcesByName) {
 		const distinctSources = deduplicateSources(sources);
 		if (distinctSources.length >= 2) {
-			conflicts.push({ name, sources: distinctSources });
+			conflicts.push({ name: distinctSources[0]?.name ?? name, sources: distinctSources });
 		}
 	}
 	
@@ -112,6 +117,9 @@ function collectTagSources(
 	if (flattenNestedTags) {
 		collectNestedTags(plugin, sourcesByName);
 	}
+
+	// 4. Misplaced notes that match an ancestor folder name
+	collectMisplacedMatchingNotes(plugin, sourcesByName);
 	
 	return sourcesByName;
 }
@@ -132,7 +140,7 @@ function collectExistingTagFiles(
 				type: 'existing-tag',
 				name: tagName,
 				existingTagFile: tagFile,
-			});
+			}, plugin);
 		}
 	}
 }
@@ -157,14 +165,14 @@ function collectFolders(
 		}
 		
 		const tagName = plugin.tagIndex.normalizeTag(folder.name);
-		const matchingFile = findMatchingFileInFolder(plugin, folder, tagName);
+		const matchingFile = findMatchingFileInFolder(plugin, folder, tagName) ?? undefined;
 		
 		addSource(sourcesByName, tagName, {
 			type: 'folder',
 			name: tagName,
 			folder,
 			matchingFile,
-		});
+		}, plugin);
 		
 		// Process children
 		for (const child of folder.children) {
@@ -178,21 +186,19 @@ function collectFolders(
 }
 
 /**
- * Find a file inside a folder with a matching name (will become the tag note).
+ * Collect notes whose basename matches an ancestor folder (misplaced matching notes).
  */
-function findMatchingFileInFolder(
+function collectMisplacedMatchingNotes(
 	plugin: TaggableTagsPlugin,
-	folder: TFolder,
-	tagName: string
-): TFile | undefined {
-	for (const child of folder.children) {
-		if (!(child instanceof TFile) || child.extension !== 'md') continue;
-		
-		if (namesMatch(child.basename, tagName)) {
-			return child;
-		}
+	sourcesByName: Map<string, TagSource[]>
+): void {
+	for (const hit of findMisplacedMatchingNotes(plugin)) {
+		addSource(sourcesByName, hit.tagName, {
+			type: 'matching-note',
+			name: hit.tagName,
+			matchingNote: hit.file,
+		}, plugin);
 	}
-	return undefined;
 }
 
 /**
@@ -254,29 +260,33 @@ function addNestedTagSource(
 			type: 'nested-tag',
 			name: normalizedLevel,
 			nestedTagPath,
-		});
+		}, plugin);
 	}
 }
 
 /**
- * Add a source to the map.
+ * Add a source to the map (keyed by comparison key so casing/separators match).
  */
 function addSource(
 	sourcesByName: Map<string, TagSource[]>,
 	name: string,
-	source: TagSource
+	source: TagSource,
+	plugin?: TaggableTagsPlugin
 ): void {
-	if (!sourcesByName.has(name)) {
-		sourcesByName.set(name, []);
+	const key = toComparisonKey(name, plugin?.settings);
+	if (!sourcesByName.has(key)) {
+		sourcesByName.set(key, []);
 	}
-	sourcesByName.get(name)!.push(source);
+	sourcesByName.get(key)!.push(source);
 }
 
 /**
  * Deduplicate sources - merge sources that represent the same thing.
  * 
  * Rules:
- * - A folder containing an existing tag file for the same name = 1 source (existing tag wins)
+ * - Multiple folders with the same leaf name are ALWAYS kept distinct (they conflict;
+ *   the deeper one must be renamed to avoid cycles like Beliefs/.../Beliefs)
+ * - A single folder containing an existing tag file for the same name = 1 source (existing tag wins)
  * - A folder with a matching file inside (that will become a tag file) = 1 source (the folder)
  * - Multiple nested tags with the same leaf name = 1 source (any one of them)
  * - If a folder's matching file IS an existing tag file, they're the same source
@@ -285,12 +295,19 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 	const folders = sources.filter(s => s.type === 'folder');
 	const existingTags = sources.filter(s => s.type === 'existing-tag');
 	const nestedTags = sources.filter(s => s.type === 'nested-tag');
+	const matchingNotes = sources.filter(s => s.type === 'matching-note');
 	
+	// Multiple folders with the same name always conflict — keep all of them.
+	// Do not merge any with existing tag files; the folder rename is what matters.
+	if (folders.length >= 2) {
+		// Still include misplaced matching notes — they also need renaming
+		return [...folders, ...matchingNotes];
+	}
+
 	const result: TagSource[] = [];
 	const mergedFolderPaths = new Set<string>();
-	const mergedTagFilePaths = new Set<string>();
 	
-	// Check each folder - does it have a matching file that's already a tag file?
+	// Single folder (or none) — merge with existing tag when they represent the same thing
 	for (const folder of folders) {
 		if (!folder.folder) continue;
 		
@@ -301,15 +318,12 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 			);
 			
 			if (matchingTagSource) {
-				// The folder's matching file IS an existing tag file
-				// This is one unified source - the existing tag wins representation
 				mergedFolderPaths.add(folder.folder.path);
-				// Don't mark the tag as merged - we'll add it later
 				continue;
 			}
 		}
 		
-		// Check if there's an existing tag file inside this folder (but not the matching file)
+		// Check if there's an existing tag file inside this folder
 		const tagFileInFolder = existingTags.find(t => {
 			if (!t.existingTagFile) return false;
 			const parentFolder = t.existingTagFile.parent;
@@ -317,13 +331,12 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 		});
 		
 		if (tagFileInFolder) {
-			// Merge: existing tag file in folder = one source (existing tag wins)
 			mergedFolderPaths.add(folder.folder.path);
 			continue;
 		}
 	}
 	
-	// Add existing tags (they weren't filtered out)
+	// Add existing tags
 	for (const tag of existingTags) {
 		result.push(tag);
 	}
@@ -334,29 +347,51 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 			result.push(folder);
 		}
 	}
+
+	// Misplaced matching notes always remain as distinct sources (must be renamed)
+	for (const note of matchingNotes) {
+		result.push(note);
+	}
 	
-	// For nested tags, only add one representative (they all create the same tag)
-	if (nestedTags.length > 0) {
-		// Check if any existing tag or folder already covers this
-		const hasExistingSource = result.length > 0;
-		if (!hasExistingSource) {
-			// Only add nested tag source if no folder/existing tag covers it
-			result.push(nestedTags[0]);
-		}
-		// If there are folders/existing tags, nested tags don't add a new conflict
-		// because the flatten step will just use the existing tag
+	// For nested tags, only add one representative if nothing else covers this name
+	if (nestedTags.length > 0 && result.length === 0) {
+		result.push(nestedTags[0]);
 	}
 	
 	return result;
 }
 
 /**
+ * Vault depth of a source — shallower sources keep the original name so that
+ * nested same-named folders (Beliefs/.../Beliefs) are the ones renamed.
+ */
+function getSourceDepth(source: TagSource): number {
+	if (source.type === 'folder' && source.folder) {
+		return source.folder.path.split('/').filter(Boolean).length;
+	}
+	if (source.type === 'existing-tag' && source.existingTagFile) {
+		const parent = source.existingTagFile.parent;
+		if (!parent || parent.isRoot()) return 1;
+		return parent.path.split('/').filter(Boolean).length;
+	}
+	if (source.type === 'matching-note' && source.matchingNote) {
+		const parent = source.matchingNote.parent;
+		if (!parent || parent.isRoot()) return 1;
+		return parent.path.split('/').filter(Boolean).length;
+	}
+	if (source.type === 'nested-tag' && source.nestedTagPath) {
+		return source.nestedTagPath.split('/').filter(Boolean).length;
+	}
+	return 999;
+}
+
+/**
  * Generate resolution proposals for a conflict.
  * 
  * Priority for keeping original name:
- * 1. Existing tag file (it's already established)
- * 2. Shallowest folder (most general/top-level)
- * 3. First alphabetically
+ * 1. Shallowest in the vault hierarchy (avoids cycles from Beliefs/.../Beliefs)
+ * 2. Existing tag file over folder over nested-tag (at equal depth)
+ * 3. First alphabetically by path
  */
 function generateResolutions(
 	plugin: TaggableTagsPlugin,
@@ -364,26 +399,24 @@ function generateResolutions(
 ): ConflictResolution[] {
 	const resolutions: ConflictResolution[] = [];
 	
-	// Sort sources by priority
+	const typePriority = (t: TagSourceType): number => {
+		if (t === 'existing-tag') return 0;
+		if (t === 'folder') return 1;
+		if (t === 'matching-note') return 3; // Always rename deep matching notes before nested-tag
+		return 2;
+	};
+
 	const sortedSources = [...conflict.sources].sort((a, b) => {
-		// Existing tags have highest priority
-		if (a.type === 'existing-tag' && b.type !== 'existing-tag') return -1;
-		if (b.type === 'existing-tag' && a.type !== 'existing-tag') return 1;
+		const depthA = getSourceDepth(a);
+		const depthB = getSourceDepth(b);
+		if (depthA !== depthB) return depthA - depthB;
+
+		const typeDiff = typePriority(a.type) - typePriority(b.type);
+		if (typeDiff !== 0) return typeDiff;
 		
-		// Then folders by depth (shallowest first)
-		if (a.type === 'folder' && b.type === 'folder') {
-			const depthA = a.folder!.path.split('/').length;
-			const depthB = b.folder!.path.split('/').length;
-			if (depthA !== depthB) return depthA - depthB;
-		}
-		
-		// Then alphabetically by path
-		const pathA = getSourcePath(a);
-		const pathB = getSourcePath(b);
-		return pathA.localeCompare(pathB);
+		return getSourcePath(a).localeCompare(getSourcePath(b));
 	});
 	
-	// First source keeps its name, others get renamed
 	const keeper = sortedSources[0];
 	
 	for (const source of sortedSources) {
@@ -411,6 +444,7 @@ function generateResolutions(
 function getSourcePath(source: TagSource): string {
 	if (source.type === 'folder') return source.folder!.path;
 	if (source.type === 'existing-tag') return source.existingTagFile!.path;
+	if (source.type === 'matching-note') return source.matchingNote!.path;
 	if (source.type === 'nested-tag') return source.nestedTagPath || '';
 	return '';
 }
@@ -423,72 +457,111 @@ function generateUniqueName(
 	source: TagSource,
 	originalName: string
 ): string {
-	if (source.type === 'folder' && source.folder) {
-		const parent = source.folder.parent;
-		if (parent && !parent.isRoot()) {
-			const parentName = plugin.tagIndex.normalizeTag(parent.name);
-			return `${originalName}-${parentName}`;
-		}
-	}
-	
-	if (source.type === 'existing-tag' && source.existingTagFile) {
-		const parent = source.existingTagFile.parent;
-		if (parent && !parent.isRoot()) {
-			const parentName = plugin.tagIndex.normalizeTag(parent.name);
-			return `${originalName}-${parentName}`;
-		}
-	}
-	
-	if (source.type === 'nested-tag' && source.nestedTagPath) {
-		const parts = source.nestedTagPath.split('/');
-		if (parts.length >= 2) {
-			// Use the parent level as context
-			const parentLevel = parts[parts.length - 2];
-			return `${originalName}-${parentLevel}`;
-		}
-	}
-	
-	// Fallback: numeric suffix
-	return `${originalName}_2`;
+	return uniqueNameForSource(plugin, source, originalName);
+}
+
+/**
+ * Result of applying conflict resolutions.
+ */
+export interface ApplyConflictResolutionsResult {
+	renamedCount: number;
+	/**
+	 * After renaming a folder away from conflict leaf L, map new folder path → [L]
+	 * so tag creation can dual-parent the new tag under L and the folder parent.
+	 */
+	collisionParentsByFolderPath: Map<string, string[]>;
 }
 
 /**
  * Apply the conflict resolutions by renaming folders and files.
- * Returns the number of items renamed.
  */
 export async function applyConflictResolutions(
 	plugin: TaggableTagsPlugin,
 	resolutions: Map<NamingConflict, ConflictResolution[]>
-): Promise<number> {
+): Promise<ApplyConflictResolutionsResult> {
 	let renamedCount = 0;
+	const collisionParentsByFolderPath = new Map<string, string[]>();
 	
 	for (const [conflict, conflictResolutions] of resolutions) {
+		const collisionLeaf = plugin.tagIndex.normalizeTag(conflict.name);
+
 		for (const resolution of conflictResolutions) {
 			if (resolution.keepsOriginalName) continue;
 			
 			const source = resolution.source;
 			const newName = resolution.newName;
+			const displayName = plugin.tagIndex.toDisplayName(newName);
+			const canonicalName = plugin.tagIndex.normalizeTag(newName);
 			
 			if (source.type === 'folder' && source.folder) {
-				// Rename folder
-				const renamed = await renameFolder(plugin, source.folder, newName);
-				if (renamed) renamedCount++;
+				const oldFolderName = source.folder.name;
+				const renamed = await renameFolder(plugin, source.folder, displayName);
+				if (renamed) {
+					renamedCount++;
+					// Folder path updated in place after rename
+					const newPath = source.folder.path;
+					const existing = collisionParentsByFolderPath.get(newPath) ?? [];
+					if (!existing.some(p => plugin.tagIndex.tagsMatch(p, collisionLeaf))) {
+						existing.push(collisionLeaf);
+					}
+					collisionParentsByFolderPath.set(newPath, existing);
+				}
 				
-				// Also rename matching file inside folder if present
-				if (source.matchingFile) {
-					const fileRenamed = await renameFile(plugin, source.matchingFile, newName);
-					if (fileRenamed) renamedCount++;
+				let matchingFile = source.matchingFile;
+				if (!matchingFile && source.folder) {
+					for (const child of source.folder.children) {
+						if (child instanceof TFile && child.extension === 'md') {
+							const base = child.basename;
+							if (
+								base === oldFolderName ||
+								plugin.tagIndex.tagsMatch(base, conflict.name) ||
+								plugin.tagIndex.tagsMatch(base, source.name)
+							) {
+								matchingFile = child;
+								break;
+							}
+						}
+					}
+				}
+				if (matchingFile) {
+					if (plugin.tagIndex.isTagFile(matchingFile)) {
+						const fileRenamed = await renameTagFile(plugin, matchingFile, canonicalName);
+						if (fileRenamed) renamedCount++;
+					} else {
+						const fileRenamed = await renameFile(plugin, matchingFile, displayName);
+						if (fileRenamed) renamedCount++;
+					}
 				}
 			} else if (source.type === 'existing-tag' && source.existingTagFile) {
-				// Rename tag file and update its tag property
-				const renamed = await renameTagFile(plugin, source.existingTagFile, newName);
+				const renamed = await renameTagFile(plugin, source.existingTagFile, canonicalName);
 				if (renamed) renamedCount++;
+
+				const parent = source.existingTagFile.parent;
+				if (parent && !parent.isRoot() && plugin.tagIndex.tagsMatch(parent.name, conflict.name)) {
+					const folderRenamed = await renameFolder(plugin, parent, displayName);
+					if (folderRenamed) {
+						renamedCount++;
+						const newPath = parent.path;
+						const existing = collisionParentsByFolderPath.get(newPath) ?? [];
+						if (!existing.some(p => plugin.tagIndex.tagsMatch(p, collisionLeaf))) {
+							existing.push(collisionLeaf);
+						}
+						collisionParentsByFolderPath.set(newPath, existing);
+					}
+				}
+			} else if (source.type === 'matching-note' && source.matchingNote) {
+				if (plugin.tagIndex.isTagFile(source.matchingNote)) {
+					const renamed = await renameTagFile(plugin, source.matchingNote, canonicalName);
+					if (renamed) renamedCount++;
+				} else {
+					const renamed = await renameFile(plugin, source.matchingNote, displayName);
+					if (renamed) renamedCount++;
+				}
 			}
-			// nested-tag sources don't need renaming - flatten will use whatever exists
 		}
 	}
 	
-	return renamedCount;
+	return { renamedCount, collisionParentsByFolderPath };
 }
 
 /**
@@ -565,8 +638,8 @@ async function renameTagFile(
 		return false;
 	}
 	
-	// Then rename the file
-	return await renameFile(plugin, file, newTagName);
+	// Then rename the file using display naming rules
+	return await renameFile(plugin, file, plugin.tagIndex.toDisplayName(newTagName));
 }
 
 /**
@@ -600,6 +673,8 @@ export function describeSource(source: TagSource): string {
 			return `Folder: ${source.folder?.path || 'unknown'}`;
 		case 'existing-tag':
 			return `Tag file: ${source.existingTagFile?.path || 'unknown'}`;
+		case 'matching-note':
+			return `Matching note: ${source.matchingNote?.path || 'unknown'}`;
 		case 'nested-tag':
 			return `Nested tag: #${source.nestedTagPath || 'unknown'}`;
 		default:

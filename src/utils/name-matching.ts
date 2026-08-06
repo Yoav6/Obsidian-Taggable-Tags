@@ -1,46 +1,48 @@
 import { TFile, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { namesMatch as namesMatchCore, toComparisonKey } from './tag-naming';
+
+export { toComparisonKey };
 
 /**
- * Normalize a name for comparison by:
- * - Converting to lowercase
- * - Replacing hyphens and underscores with spaces
- * - Trimming whitespace
+ * Check if two names match when normalized for comparison
+ * (case-insensitive; spaces / - / _ / configured separator equivalent).
  */
-export function normalizeForComparison(name: string): string {
-	return name
-		.toLowerCase()
-		.replace(/[-_]/g, ' ')
-		.trim();
+export function namesMatch(name1: string, name2: string, plugin?: TaggableTagsPlugin): boolean {
+	return namesMatchCore(name1, name2, plugin?.settings);
 }
 
 /**
- * Check if two names match when normalized.
+ * Normalize a name for comparison.
  */
-export function namesMatch(name1: string, name2: string): boolean {
-	return normalizeForComparison(name1) === normalizeForComparison(name2);
+export function normalizeForComparison(name: string, plugin?: TaggableTagsPlugin): string {
+	return toComparisonKey(name, plugin?.settings);
+}
+
+/**
+ * Whether a file is under a folder (including as a direct child).
+ */
+export function isFileUnderFolder(file: TFile, folder: TFolder): boolean {
+	if (folder.isRoot()) {
+		return true;
+	}
+	return file.path === folder.path || file.path.startsWith(folder.path + '/');
 }
 
 /**
  * Find an existing folder with a name that matches the tag name (when normalized).
  * Searches only direct children of the specified parent folder (or vault root).
- * 
- * @param plugin The plugin instance
- * @param tagName The tag name to match against
- * @param parentFolder The folder to search in (defaults to vault root)
- * @returns The matching folder, or null if none found
  */
 export function findMatchingFolder(
 	plugin: TaggableTagsPlugin,
 	tagName: string,
 	parentFolder?: TFolder
 ): TFolder | null {
-	const normalizedTagName = normalizeForComparison(tagName);
 	const searchRoot = parentFolder || plugin.app.vault.getRoot();
-	
+
 	for (const child of searchRoot.children) {
 		if (child instanceof TFolder) {
-			if (normalizeForComparison(child.name) === normalizedTagName) {
+			if (namesMatch(child.name, tagName, plugin)) {
 				return child;
 			}
 		}
@@ -48,42 +50,71 @@ export function findMatchingFolder(
 	return null;
 }
 
+export interface FindMatchingNonTagFileOptions {
+	/** Only consider files under this folder */
+	onlyUnder?: TFolder;
+	/** Only consider direct children of onlyUnder (requires onlyUnder) */
+	directChildOnly?: boolean;
+}
+
 /**
  * Find an existing file with a name that matches the tag name (when normalized),
  * but doesn't have the tag property (i.e., it's not already a tag file).
- * 
- * @param plugin The plugin instance
- * @param tagName The tag name to match against
- * @returns The matching file, or null if none found
+ *
+ * By default searches the whole vault (legacy). Prefer scoping with options
+ * so deep notes like Sociognosticism/Beliefs.md are not promoted to #Beliefs.
  */
 export function findMatchingNonTagFile(
 	plugin: TaggableTagsPlugin,
-	tagName: string
+	tagName: string,
+	opts?: FindMatchingNonTagFileOptions
 ): TFile | null {
-	const normalizedTagName = normalizeForComparison(tagName);
 	const propName = plugin.settings.tagPropertyName;
-	
-	// Get all markdown files
 	const files = plugin.app.vault.getMarkdownFiles();
-	
+
 	for (const file of files) {
-		// Check if the basename matches (normalized)
-		if (normalizeForComparison(file.basename) !== normalizedTagName) {
+		if (!namesMatch(file.basename, tagName, plugin)) {
 			continue;
 		}
-		
-		// Check if this file already has the tag property
+
+		if (opts?.onlyUnder) {
+			if (opts.directChildOnly) {
+				if (file.parent?.path !== opts.onlyUnder.path) {
+					continue;
+				}
+			} else if (!isFileUnderFolder(file, opts.onlyUnder)) {
+				continue;
+			}
+		}
+
 		const cache = plugin.app.metadataCache.getFileCache(file);
 		const frontmatter = cache?.frontmatter;
-		
-		// If the file has the tag property, it's already a tag file - skip it
+
 		if (frontmatter && propName in frontmatter) {
 			continue;
 		}
-		
-		// Found a matching file without the tag property
+
 		return file;
 	}
-	
+
+	return null;
+}
+
+/**
+ * Find a markdown file in a folder whose basename matches the tag name,
+ * skipping files that are already tag files.
+ */
+export function findMatchingFileInFolder(
+	plugin: TaggableTagsPlugin,
+	folder: TFolder,
+	tagName: string
+): TFile | null {
+	for (const child of folder.children) {
+		if (!(child instanceof TFile) || child.extension !== 'md') continue;
+		if (plugin.tagIndex.isTagFile(child)) continue;
+		if (namesMatch(child.basename, tagName, plugin)) {
+			return child;
+		}
+	}
 	return null;
 }

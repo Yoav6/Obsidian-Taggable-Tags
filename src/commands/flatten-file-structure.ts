@@ -54,7 +54,6 @@ export async function flattenFileStructure(plugin: TaggableTagsPlugin): Promise<
 		
 		new Notice(message);
 	} catch (error) {
-		console.error('Error flattening file structure:', error);
 		new Notice(`Error flattening file structure: ${error instanceof Error ? error.message : 'Unknown error'}`);
 	}
 }

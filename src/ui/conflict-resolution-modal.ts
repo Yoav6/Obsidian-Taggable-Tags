@@ -102,10 +102,12 @@ export class ConflictResolutionModal extends Modal {
 		const folderCount = conflict.sources.filter(s => s.type === 'folder').length;
 		const tagCount = conflict.sources.filter(s => s.type === 'existing-tag').length;
 		const nestedCount = conflict.sources.filter(s => s.type === 'nested-tag').length;
+		const noteCount = conflict.sources.filter(s => s.type === 'matching-note').length;
 		
 		const parts: string[] = [];
 		if (folderCount > 0) parts.push(`${folderCount} folder${folderCount === 1 ? '' : 's'}`);
 		if (tagCount > 0) parts.push(`${tagCount} tag file${tagCount === 1 ? '' : 's'}`);
+		if (noteCount > 0) parts.push(`${noteCount} matching note${noteCount === 1 ? '' : 's'}`);
 		if (nestedCount > 0) parts.push(`${nestedCount} nested tag${nestedCount === 1 ? '' : 's'}`);
 		
 		section.createEl('h4', { 
@@ -172,6 +174,7 @@ export class ConflictResolutionModal extends Modal {
 		switch (source.type) {
 			case 'folder': return '📁';
 			case 'existing-tag': return '🏷️';
+			case 'matching-note': return '📄';
 			case 'nested-tag': return '#';
 			default: return '?';
 		}
@@ -181,7 +184,8 @@ export class ConflictResolutionModal extends Modal {
 		switch (source.type) {
 			case 'folder': return source.folder?.path || 'unknown';
 			case 'existing-tag': return source.existingTagFile?.path || 'unknown';
-			case 'nested-tag': return source.nestedTagPath || 'unknown';
+			case 'matching-note': return source.matchingNote?.path || 'unknown';
+			case 'nested-tag': return `#${source.nestedTagPath || 'unknown'}`;
 			default: return 'unknown';
 		}
 	}

@@ -19,8 +19,8 @@ export async function removeTagFromFile(plugin: TaggableTagsPlugin, file: TFile,
 	let newContent = content;
 	let changed = false;
 
-	// Remove inline tags: #tag (with word boundary to avoid partial matches)
-	const inlineRegex = new RegExp(`#${escapeRegex(tag)}(?![\\w-])`, 'g');
+	// Remove inline tags: #tag (with word boundary to avoid partial matches; case-insensitive)
+	const inlineRegex = new RegExp(`#${escapeRegex(tag)}(?![\\w-])`, 'gi');
 	if (inlineRegex.test(content)) {
 		newContent = content.replace(inlineRegex, '');
 		changed = true;
@@ -45,9 +45,7 @@ export async function removeTagFromFile(plugin: TaggableTagsPlugin, file: TFile,
 			// Split items, filter out the tag, rejoin
 			const itemList = items.split(',').map((item: string) => item.trim()).filter((item: string) => item !== '');
 			const filteredItems = itemList.filter((item: string) => {
-				const normalizedItem = plugin.tagIndex.normalizeTag(item);
-				const normalizedTag = plugin.tagIndex.normalizeTag(tag);
-				return normalizedItem !== normalizedTag;
+				return !plugin.tagIndex.tagsMatch(item, tag);
 			});
 			if (filteredItems.length !== itemList.length) {
 				changed = true;
@@ -61,7 +59,7 @@ export async function removeTagFromFile(plugin: TaggableTagsPlugin, file: TFile,
 		//   - tag2
 		const yamlListRegex = new RegExp(
 			`^(\\s*-\\s*)${escapeRegex(tag)}(\\s*)$`,
-			'gm'
+			'gim'
 		);
 		if (yamlListRegex.test(newFrontmatter)) {
 			newFrontmatter = newFrontmatter.replace(yamlListRegex, '');

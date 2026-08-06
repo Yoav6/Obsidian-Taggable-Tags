@@ -115,9 +115,8 @@ export class ChildlessTagModal extends Modal {
 			return;
 		}
 
-		// Validate
-		if (/[\s#]/.test(newName)) {
-			// Show error (could use Notice, but keeping modal open)
+		// Validate (# not allowed; spaces OK — converted via naming helpers)
+		if (newName.includes('#')) {
 			this.newNameInput.addClass('is-invalid');
 			return;
 		}

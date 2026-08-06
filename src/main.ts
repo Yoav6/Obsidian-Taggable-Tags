@@ -13,6 +13,8 @@ import { flattenNestedTags } from './commands/flatten-nested-tags';
 import { flattenFileStructure } from './commands/flatten-file-structure';
 import { migrateVault } from './commands/migrate-vault';
 import { findCircularTags } from './commands/find-circular-tags';
+import { refreshTagIndex } from './commands/refresh-tag-index';
+import { sanitizeTagSpaceSeparatorInput } from './utils/tag-naming';
 
 export default class TaggableTagsPlugin extends Plugin {
 	settings: TaggableTagsSettings;
@@ -56,6 +58,12 @@ export default class TaggableTagsPlugin extends Plugin {
 			id: 'find-circular-tags',
 			name: 'Utility: find circular tag relationships',
 			callback: () => findCircularTags(this),
+		});
+
+		this.addCommand({
+			id: 'refresh-tag-index',
+			name: 'Utility: refresh tag index and explorer',
+			callback: () => refreshTagIndex(this),
 		});
 		
 		// Wait for layout to be ready before initializing
@@ -101,11 +109,10 @@ export default class TaggableTagsPlugin extends Plugin {
 	 * Convert a regular note to a tag note by adding the tag property
 	 */
 	private async convertToTagNote(file: TFile): Promise<void> {
-		// Infer tag name from file name: lowercase, underscores instead of spaces
-		const tagName = file.basename
-			.toLowerCase()
-			.replace(/\s+/g, '_');
-		
+		// Infer tag name from file name (spaces → configured separator, case preserved)
+		const tagName = this.tagIndex.normalizeTag(
+			this.tagIndex.unsanitizeTagName(file.basename)
+		);
 		const propName = this.settings.tagPropertyName;
 		const content = await this.app.vault.read(file);
 		
@@ -194,6 +201,15 @@ Note that since this file isn't supposed to be viewed, the view isn't refreshed 
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// Migrate / sanitize naming settings; drop removed forceLowercase if present
+		const raw = this.settings as TaggableTagsSettings & { forceLowercase?: boolean };
+		delete raw.forceLowercase;
+		this.settings.tagSpaceSeparator = sanitizeTagSpaceSeparatorInput(
+			this.settings.tagSpaceSeparator ?? '_'
+		);
+		if (typeof this.settings.replaceSeparatorsWithSpaces !== 'boolean') {
+			this.settings.replaceSeparatorsWithSpaces = true;
+		}
 	}
 
 	async saveSettings() {

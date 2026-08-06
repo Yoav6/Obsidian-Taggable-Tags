@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting } from 'obsidian';
 import type TaggableTagsPlugin from './main';
 import { getTagExplorerView } from './ui/tag-explorer-view';
 import { syncEntireVault } from './sync/folder-sync';
+import { sanitizeTagSpaceSeparatorInput } from './utils/tag-naming';
 
 export type TagClickBehavior = 'replace' | 'add' | 'default';
 export type FolderTagBehavior = 'ask' | 'always' | 'never';
@@ -11,7 +12,10 @@ export type EmptyFolderBehavior = 'delete' | 'create-tag' | 'ask' | 'nothing';
 export interface TaggableTagsSettings {
 	autoCreateFiles: boolean;
 	confirmUnusedTagDeletion: boolean;
-	forceLowercase: boolean;
+	/** Character that replaces spaces in tag property / applied tags (default '_'). */
+	tagSpaceSeparator: string;
+	/** When true, tag note and tag folder names use spaces instead of the tag separator. */
+	replaceSeparatorsWithSpaces: boolean;
 	// Tag property settings
 	tagPropertyName: string;
 	exceptionToPropertyName: string;  // Property name for exception tags (e.g., "exception to")
@@ -43,7 +47,8 @@ export interface TaggableTagsSettings {
 export const DEFAULT_SETTINGS: TaggableTagsSettings = {
 	autoCreateFiles: false,
 	confirmUnusedTagDeletion: true,
-	forceLowercase: true,
+	tagSpaceSeparator: '_',
+	replaceSeparatorsWithSpaces: true,
 	// Tag property defaults
 	tagPropertyName: 'tag',
 	exceptionToPropertyName: 'exception to',
@@ -82,6 +87,10 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
+		// Parent .vertical-tab-content is the scroll container; emptying
+		// containerEl collapses scroll height and jumps to the top.
+		const scrollEl = containerEl.closest('.vertical-tab-content') ?? containerEl.parentElement;
+		const scrollTop = scrollEl?.scrollTop ?? 0;
 
 		containerEl.empty();
 
@@ -111,7 +120,7 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Use existing files as tags')
-			.setDesc('When creating a tag, if a file with a matching name exists (ignoring case and -/_), offer to use it as the tag file.')
+			.setDesc('When creating a tag, if a file with a matching name exists (ignoring case and separators), offer to use it as the tag file.')
 			.addDropdown(dropdown => dropdown
 				.addOption('ask', 'Ask each time')
 				.addOption('auto', 'Automatically use existing file')
@@ -126,18 +135,29 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 		containerEl.createEl('h3', { text: 'Tag names' });
 
 		new Setting(containerEl)
-			.setName('Force lowercase tags')
-			.setDesc('Automatically convert all tags to lowercase for consistency.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.forceLowercase)
+			.setName('Space character in tags')
+			.setDesc('Character used to replace spaces in tag names (property and applied tags). Default is _. Comparisons are always case-insensitive.')
+			.addText(text => text
+				.setPlaceholder('_')
+				.setValue(this.plugin.settings.tagSpaceSeparator)
 				.onChange(async (value) => {
-					this.plugin.settings.forceLowercase = value;
+					this.plugin.settings.tagSpaceSeparator = sanitizeTagSpaceSeparatorInput(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Replace separator characters with spaces in tag note and tag folder names')
+			.setDesc('When on, note and folder names use spaces instead of the tag space character (e.g. Arts_and_Crafts → Arts and Crafts). When off, notes and folders use the same separator as tags.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.replaceSeparatorsWithSpaces)
+				.onChange(async (value) => {
+					this.plugin.settings.replaceSeparatorsWithSpaces = value;
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
 			.setName('Sync file names with tag names')
-			.setDesc('When enabled, renaming a tag file will update its tag property, and changing the tag property will rename the file.')
+			.setDesc('When enabled, renaming a tag file will update its tag property, and changing the tag property will rename the file. Respects the separator→spaces setting for note names.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.syncFileNamesWithTags)
 				.onChange(async (value) => {
@@ -392,6 +412,13 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 					this.plugin.settings.confirmUnusedTagDeletion = value;
 					await this.plugin.saveSettings();
 				}));
+
+		if (scrollEl) {
+			// Restore after layout so the rebuilt content has a real scroll height.
+			requestAnimationFrame(() => {
+				scrollEl.scrollTop = scrollTop;
+			});
+		}
 	}
 
 	/**

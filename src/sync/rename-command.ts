@@ -8,7 +8,7 @@ import { updateTagProperty, replaceTagEverywhere, markPluginInitiatedChange } fr
 export async function renameTag(plugin: TaggableTagsPlugin, oldTag: string, newTag: string): Promise<void> {
 	const app = plugin.app;
 	
-	// Normalize the new tag
+	// Normalize the new tag (spaces → separator, case preserved)
 	const normalizedNewTag = plugin.tagIndex.normalizeTag(newTag);
 	
 	// Get the tag file if it exists
@@ -27,8 +27,8 @@ export async function renameTag(plugin: TaggableTagsPlugin, oldTag: string, newT
 		
 		// If syncFileNamesWithTags is enabled, also rename the file
 		if (plugin.settings.syncFileNamesWithTags) {
-			const sanitizedTagName = plugin.tagIndex.sanitizeTagName(normalizedNewTag);
-			const newFileName = `${sanitizedTagName}.md`;
+			const displayName = plugin.tagIndex.toDisplayName(normalizedNewTag);
+			const newFileName = `${displayName}.md`;
 			const currentDir = tagFile.parent?.path || '';
 			const newPath = normalizePath(currentDir ? `${currentDir}/${newFileName}` : newFileName);
 			

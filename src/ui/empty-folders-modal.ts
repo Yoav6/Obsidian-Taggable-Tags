@@ -1,6 +1,10 @@
 import { Modal, Setting, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { generateTagFileContent } from '../utils/tag-template';
+import {
+	disambiguateFolderIfNeeded,
+	collectSafeParentTags,
+} from '../utils/cycle-prevention';
 
 /**
  * Action to take for an empty folder.
@@ -197,22 +201,30 @@ export class EmptyFoldersModal extends Modal {
 	}
 
 	private async createTagFileForFolder(folder: TFolder): Promise<void> {
-		const tagName = this.plugin.tagIndex.getTagFromFolderPath(folder.path);
+		const disambiguated = await disambiguateFolderIfNeeded(this.plugin, folder);
+		if (disambiguated.failed) return;
+
+		const currentFolder = disambiguated.folder;
+		const tagName = this.plugin.tagIndex.getTagFromFolderPath(currentFolder.path);
 		if (!tagName) return;
 		
-		// Check if tag file already exists
 		const existingTagFile = this.plugin.tagIndex.getTagFile(tagName);
 		if (existingTagFile) return;
 		
-		// Determine parent tag from folder hierarchy
-		const parentFolder = folder.parent;
+		const parentFolder = currentFolder.parent;
 		const parentTag = parentFolder && !parentFolder.isRoot()
 			? this.plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
 			: null;
+		const safeParents = collectSafeParentTags(
+			this.plugin,
+			tagName,
+			parentTag,
+			disambiguated.collisionParents
+		);
 		
-		// Create tag file in the folder
-		const filePath = `${folder.path}/${tagName}.md`;
-		const content = await generateTagFileContent(this.plugin, tagName, parentTag);
+		const displayName = this.plugin.tagIndex.toDisplayName(tagName);
+		const filePath = `${currentFolder.path}/${displayName}.md`;
+		const content = await generateTagFileContent(this.plugin, tagName, safeParents);
 		
 		const file = await this.plugin.app.vault.create(filePath, content);
 		this.plugin.tagIndex.onTagFileCreated(file, tagName);

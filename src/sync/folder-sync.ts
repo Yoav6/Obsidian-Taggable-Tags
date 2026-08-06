@@ -5,8 +5,13 @@ import { markPluginInitiatedChange, isPluginInitiatedChange } from './file-renam
 import { setFirstTag, removeTag } from '../utils/tag-ordering';
 import { askKeepFolderTag } from '../ui/keep-folder-tag-modal';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
-import { namesMatch } from '../utils/name-matching';
+import { findMatchingFileInFolder } from '../utils/name-matching';
+import { toComparisonKey } from '../utils/tag-naming';
 import { deleteEmptyFolders } from '../commands/flatten-file-structure';
+import {
+	disambiguateFolderIfNeeded,
+	collectSafeParentTags,
+} from '../utils/cycle-prevention';
 
 // Folder names that should not trigger auto-creation of a tag file (e.g. Obsidian's default "untitled")
 const PLACEHOLDER_FOLDER_NAMES = ['Untitled'];
@@ -277,8 +282,7 @@ export function isExcludedTag(plugin: TaggableTagsPlugin, tag: string): boolean 
 	const excludedTags = plugin.settings.excludedTagsFromFolderSync;
 	if (excludedTags.length === 0) return false;
 
-	const normalizedTag = plugin.tagIndex.normalizeTag(tag);
-	return excludedTags.some(t => plugin.tagIndex.normalizeTag(t) === normalizedTag);
+	return excludedTags.some(t => plugin.tagIndex.tagsMatch(t, tag));
 }
 
 /**
@@ -325,12 +329,13 @@ export function resolveTagPath(tagIndex: TagIndex, tag: string): string {
 	let currentTag = tagIndex.normalizeTag(tag);
 
 	while (currentTag) {
-		if (visited.has(currentTag)) {
+		const visitKey = toComparisonKey(currentTag);
+		if (visited.has(visitKey)) {
 			// Circular reference - stop here
 			break;
 		}
-		visited.add(currentTag);
-		pathParts.unshift(currentTag);
+		visited.add(visitKey);
+		pathParts.unshift(tagIndex.toDisplayName(currentTag));
 
 		const parents = tagIndex.getParentTags(currentTag);
 		if (parents.length === 0) break;
@@ -395,12 +400,13 @@ function resolveTagPathForFile(plugin: TaggableTagsPlugin, file: TFile, tagName:
 	let isFirstIteration = true;
 
 	while (currentTag) {
-		if (visited.has(currentTag)) {
+		const visitKey = toComparisonKey(currentTag, plugin.settings);
+		if (visited.has(visitKey)) {
 			// Circular reference - stop here
 			break;
 		}
-		visited.add(currentTag);
-		pathParts.unshift(currentTag);
+		visited.add(visitKey);
+		pathParts.unshift(plugin.tagIndex.toDisplayName(currentTag));
 
 		let parents: string[];
 		
@@ -496,7 +502,7 @@ export async function syncTagFileToFolder(plugin: TaggableTagsPlugin, file: TFil
 	const folderName = file.parent?.name;
 	
 	if (tagName && folderName && file.parent && 
-		plugin.tagIndex.normalizeTag(folderName) === plugin.tagIndex.normalizeTag(tagName)) {
+		plugin.tagIndex.tagsMatch(folderName, tagName)) {
 		// Tag file is in its own folder - move the entire folder
 		await moveTagFolder(plugin, file.parent, targetFolder);
 	} else {
@@ -785,90 +791,90 @@ async function handleFolderCreation(plugin: TaggableTagsPlugin, folder: TFolder)
 		return;
 	}
 
-	// Check if tag already exists
-	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-	if (existingTagFile) {
-		return;
-	}
-
-	// Create tag file for this folder
+	// Create tag file for this folder (disambiguates ancestor collisions internally)
 	await createTagFileForFolder(plugin, folder);
 }
 
 /**
  * Create a tag file for a folder.
- * Sets up parent relationship based on folder hierarchy.
+ * Sets up parent relationship based on folder hierarchy (and collision leaf when renamed).
  * If a file with a matching name exists in the folder, converts it to a tag file instead of creating a new one.
+ * Renames the folder when its tag name would collide with an ancestor or cousin folder.
  */
 async function createTagFileForFolder(plugin: TaggableTagsPlugin, folder: TFolder): Promise<void> {
-	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
-	if (!tagName) return;
-
-	// Check if tag file already exists in the index
-	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-	if (existingTagFile) {
+	markPluginInitiatedMove(folder.path);
+	const disambiguated = await disambiguateFolderIfNeeded(plugin, folder);
+	if (disambiguated.failed) {
 		return;
 	}
 
-	// Determine parent tag from folder hierarchy
-	const parentFolder = folder.parent;
-	const parentTag = parentFolder ? plugin.tagIndex.getTagFromFolderPath(parentFolder.path) : null;
+	const currentFolder = disambiguated.folder;
+	if (disambiguated.renamed) {
+		markPluginInitiatedMove(currentFolder.path);
+	}
 
-	// Check for existing file with matching name in this folder that can be converted
-	const matchingFile = findMatchingFileInFolder(plugin, folder, tagName);
+	const tagName = plugin.tagIndex.getTagFromFolderPath(currentFolder.path);
+	if (!tagName) return;
+
+	const parentFolder = currentFolder.parent;
+	const parentTag =
+		parentFolder && !parentFolder.isRoot()
+			? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
+			: null;
+
+	const existingTagFile = plugin.tagIndex.getTagFile(tagName);
+	if (existingTagFile) {
+		// Already have this tag — do not merge a different folder into it
+		return;
+	}
+
+	const safeParents = collectSafeParentTags(
+		plugin,
+		tagName,
+		parentTag,
+		disambiguated.collisionParents
+	);
+
+	const matchingFile = findMatchingFileInFolder(plugin, currentFolder, currentFolder.name)
+		?? findMatchingFileInFolder(plugin, currentFolder, tagName);
 	if (matchingFile) {
-		// Convert existing file to tag note by adding tag properties
-		await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
+		await addTagPropertiesToFile(plugin, matchingFile, tagName, safeParents);
 		plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
 		return;
 	}
 
-	// Determine where to create the tag file
 	let tagFilePath: string;
+	const displayName = plugin.tagIndex.toDisplayName(tagName);
 	if (plugin.settings.tagFilesInDedicatedFolder) {
 		const dedicatedFolder = plugin.settings.tagFilesFolderPath;
 		await ensureFolderExists(plugin, dedicatedFolder);
-		tagFilePath = normalizePath(`${dedicatedFolder}/${tagName}.md`);
+		tagFilePath = normalizePath(`${dedicatedFolder}/${displayName}.md`);
 	} else {
-		tagFilePath = normalizePath(`${folder.path}/${tagName}.md`);
+		tagFilePath = normalizePath(`${currentFolder.path}/${displayName}.md`);
 	}
 
-	// Check if file already exists at the target path
 	const existingFile = plugin.app.vault.getAbstractFileByPath(tagFilePath);
 	if (existingFile) {
+		if (existingFile instanceof TFile && existingFile.extension === 'md') {
+			await addTagPropertiesToFile(plugin, existingFile, tagName, safeParents);
+			plugin.tagIndex.onTagFileCreated(existingFile, tagName);
+		}
 		return;
 	}
 
-	// Create the tag file content using the template utility
-	const content = await generateTagFileContent(plugin, tagName, parentTag);
+	const content = await generateTagFileContent(plugin, tagName, safeParents);
 
-	// Mark as plugin-initiated
 	markPluginInitiatedChange(tagFilePath);
 
 	try {
-		await plugin.app.vault.create(tagFilePath, content);
+		const file = await plugin.app.vault.create(tagFilePath, content);
+		plugin.tagIndex.onTagFileCreated(file, tagName);
 	} catch (error) {
-		// Ignore errors - file might already exist
-	}
-}
-
-/**
- * Find a file in a folder with a name matching the tag name.
- * Used to convert existing files to tag notes instead of creating new ones.
- */
-function findMatchingFileInFolder(plugin: TaggableTagsPlugin, folder: TFolder, tagName: string): TFile | null {
-	for (const child of folder.children) {
-		if (!(child instanceof TFile) || child.extension !== 'md') continue;
-		
-		// Skip files that are already tag files
-		if (plugin.tagIndex.isTagFile(child)) continue;
-		
-		// Check if basename matches folder/tag name (using normalized comparison)
-		if (namesMatch(child.basename, tagName)) {
-			return child;
+		const created = plugin.app.vault.getAbstractFileByPath(tagFilePath);
+		if (created instanceof TFile) {
+			plugin.tagIndex.onTagFileCreated(created, tagName);
 		}
 	}
-	return null;
 }
 
 // ============================================================================
@@ -906,8 +912,7 @@ export async function ensureFilesHaveFolderTags(plugin: TaggableTagsPlugin): Pro
 		
 		// Check if file already has this tag
 		const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
-		const normalizedFolderTag = plugin.tagIndex.normalizeTag(folderTag);
-		const hasTag = currentTags.some(t => plugin.tagIndex.normalizeTag(t) === normalizedFolderTag);
+		const hasTag = currentTags.some(t => plugin.tagIndex.tagsMatch(t, folderTag));
 		
 		filesProcessed++;
 		
@@ -950,8 +955,7 @@ export function previewFilesNeedingFolderTags(plugin: TaggableTagsPlugin): Array
 		
 		// Check if file already has this tag
 		const currentTags = plugin.tagIndex.getAllTagsFromFile(file);
-		const normalizedFolderTag = plugin.tagIndex.normalizeTag(folderTag);
-		const hasTag = currentTags.some(t => plugin.tagIndex.normalizeTag(t) === normalizedFolderTag);
+		const hasTag = currentTags.some(t => plugin.tagIndex.tagsMatch(t, folderTag));
 		
 		if (!hasTag) {
 			result.push({ file, folderTag });
@@ -1110,7 +1114,7 @@ export async function syncEntireVault(plugin: TaggableTagsPlugin): Promise<void>
 				const tagName = plugin.tagIndex.fileToTagName(file);
 				const folderName = file.parent?.name;
 				if (tagName && folderName && file.parent &&
-					plugin.tagIndex.normalizeTag(folderName) === plugin.tagIndex.normalizeTag(tagName)) {
+					plugin.tagIndex.tagsMatch(folderName, tagName)) {
 					await moveTagFolder(plugin, file.parent, targetFolder);
 				} else {
 					await moveFileToFolder(plugin, file, targetFolder);

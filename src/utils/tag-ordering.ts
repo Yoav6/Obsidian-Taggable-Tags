@@ -1,6 +1,8 @@
 import { TFile } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { markPluginInitiatedChange } from '../sync/file-rename-sync';
+import { namesMatch } from './name-matching';
+import { toComparisonKey } from './tag-naming';
 
 /**
  * Set a tag as the first tag in a file's frontmatter tags array.
@@ -128,18 +130,19 @@ function isAncestorOf(plugin: TaggableTagsPlugin, ancestorTag: string, descendan
 	let currentTag = plugin.tagIndex.normalizeTag(descendantTag);
 	
 	while (currentTag) {
-		if (visited.has(currentTag)) {
+		const visitKey = toComparisonKey(currentTag, plugin.settings);
+		if (visited.has(visitKey)) {
 			// Circular reference - stop
 			break;
 		}
-		visited.add(currentTag);
+		visited.add(visitKey);
 		
 		const parents = plugin.tagIndex.getParentTags(currentTag);
 		if (parents.length === 0) break;
 		
 		// Check if any parent is the ancestor we're looking for
 		for (const parent of parents) {
-			if (plugin.tagIndex.normalizeTag(parent) === normalizedAncestor) {
+			if (plugin.tagIndex.tagsMatch(parent, normalizedAncestor)) {
 				return true;
 			}
 		}
@@ -275,9 +278,8 @@ function applyTagOperation(
 	tag: string,
 	operation: 'setFirst' | 'reorder' | 'remove'
 ): string[] {
-	// Normalize for comparison
-	const normalizedTag = tag.toLowerCase();
-	const tagIndex = tags.findIndex(t => t.toLowerCase() === normalizedTag);
+	// Normalize for comparison (case/separator-insensitive)
+	const tagIndex = tags.findIndex(t => namesMatch(t, tag));
 	
 	switch (operation) {
 		case 'setFirst':

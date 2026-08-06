@@ -14,7 +14,9 @@ import {
 	previewRedundantParentTags 
 } from '../utils/tag-ordering';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
-import { namesMatch } from '../utils/name-matching';
+import { findMatchingFileInFolder, findMatchingNonTagFile } from '../utils/name-matching';
+import { disambiguateFolderIfNeeded, collectSafeParentTags } from '../utils/cycle-prevention';
+import { createMissingTagFiles } from '../sync/auto-create';
 import { MigrationSettingsModal } from '../ui/migration-settings-modal';
 import { MigrationPreviewModal } from '../ui/migration-preview-modal';
 import { BackupReminderModal } from '../ui/backup-reminder-modal';
@@ -73,6 +75,7 @@ const FORCED_DURING_MIGRATION: ForcedSettings = {
  */
 export interface MigrationPreview {
 	conflictsToResolve: number;
+	conflictRenames: Array<{ path: string; fromName: string; toName: string }>;
 	tagFilesToCreate: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }>;
 	tagsToAdd: Array<{ file: TFile; folderTag: string }>;
 	redundantTagsToRemove: Array<{ file: TFile; tags: string[] }>;
@@ -156,8 +159,30 @@ export async function generateMigrationPreview(
 	settings: MigrationSettings,
 	resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null
 ): Promise<MigrationPreview> {
+	const conflictRenames: Array<{ path: string; fromName: string; toName: string }> = [];
+	if (resolvedConflicts) {
+		for (const resolutions of resolvedConflicts.values()) {
+			for (const resolution of resolutions) {
+				if (resolution.keepsOriginalName) continue;
+				const source = resolution.source;
+				const path =
+					source.folder?.path ||
+					source.existingTagFile?.path ||
+					source.matchingNote?.path ||
+					source.nestedTagPath ||
+					'unknown';
+				conflictRenames.push({
+					path,
+					fromName: source.name,
+					toName: resolution.newName,
+				});
+			}
+		}
+	}
+
 	const preview: MigrationPreview = {
-		conflictsToResolve: resolvedConflicts ? countRenames(resolvedConflicts) : 0,
+		conflictsToResolve: conflictRenames.length,
+		conflictRenames,
 		tagFilesToCreate: [],
 		tagsToAdd: [],
 		redundantTagsToRemove: [],
@@ -170,8 +195,12 @@ export async function generateMigrationPreview(
 		preview.nestedTagsToFlatten = findNestedTagsToFlatten(plugin);
 	}
 	
-	// Preview tag files to create for folders
-	preview.tagFilesToCreate = previewTagFilesForFolders(plugin, settings.excludedFolders);
+	// Preview tag files to create, first for folders and then for the tags no folder covers
+	const folderTagFiles = previewTagFilesForFolders(plugin, settings.excludedFolders);
+	preview.tagFilesToCreate = [
+		...folderTagFiles,
+		...previewTagFilesForRemainingTags(plugin, folderTagFiles),
+	];
 	
 	// Preview files that need folder tags
 	const filesNeedingTags = previewFilesNeedingFolderTags(plugin);
@@ -207,6 +236,7 @@ async function applyMigration(
 		{ id: 'tag-files', name: 'Creating tag files for folders', status: 'pending' },
 		{ id: 'folder-tags', name: 'Adding folder tags to files', status: 'pending' },
 		{ id: 'redundant', name: 'Removing redundant tags', status: 'pending' },
+		{ id: 'remaining-tags', name: 'Creating tag files for remaining tags', status: 'pending' },
 		{ id: 'rebuild', name: 'Rebuilding tag index', status: 'pending' },
 	];
 	
@@ -237,10 +267,14 @@ async function applyMigration(
 	
 	// Step 1: Apply conflict resolutions (renames)
 	let conflictErrors = 0;
+	const collisionParentsByFolderPath = new Map<string, string[]>();
 	if (resolvedConflicts && countRenames(resolvedConflicts) > 0) {
 		progressModal.startStep('conflicts');
 		const result = await applyConflictResolutionsSafe(plugin, resolvedConflicts, progressModal);
 		conflictErrors = result.errors;
+		for (const [path, parents] of result.collisionParentsByFolderPath) {
+			collisionParentsByFolderPath.set(path, parents);
+		}
 		progressModal.completeStep('conflicts', conflictErrors > 0);
 	} else {
 		progressModal.skipStep('conflicts');
@@ -258,7 +292,12 @@ async function applyMigration(
 	
 	// Step 3: Create tag files for all folders
 	progressModal.startStep('tag-files');
-	const tagFileResult = await createTagFilesForAllFoldersSafe(plugin, settings.excludedFolders, progressModal);
+	const tagFileResult = await createTagFilesForAllFoldersSafe(
+		plugin,
+		settings.excludedFolders,
+		progressModal,
+		collisionParentsByFolderPath
+	);
 	progressModal.completeStep('tag-files', tagFileResult.errors > 0);
 	
 	// Step 4: Ensure files have folder tags
@@ -276,7 +315,19 @@ async function applyMigration(
 		progressModal.skipStep('redundant');
 	}
 	
-	// Step 6: Rebuild index (this should always work)
+	// Step 6: The passes above are keyed on folders and on nested paths, so a plain tag
+	// used only inside notes still has no tag file at this point. Auto-create normally
+	// covers those but is force-disabled during migration, so run it once here.
+	progressModal.startStep('remaining-tags');
+	try {
+		await createMissingTagFiles(plugin);
+		progressModal.completeStep('remaining-tags');
+	} catch (error) {
+		progressModal.addError('remaining-tags', `Failed to create tag files: ${String(error)}`);
+		progressModal.completeStep('remaining-tags', true);
+	}
+
+	// Step 7: Rebuild index (this should always work)
 	progressModal.startStep('rebuild');
 	try {
 		await plugin.tagIndex.rebuild();
@@ -348,6 +399,7 @@ async function createMigrationErrorNote(
 		'tag-files': 'Creating tag files for folders',
 		'folder-tags': 'Adding folder tags to files',
 		'redundant': 'Removing redundant parent tags',
+		'remaining-tags': 'Creating tag files for remaining tags',
 		'rebuild': 'Rebuilding tag index',
 	};
 	
@@ -382,9 +434,10 @@ async function applyConflictResolutionsSafe(
 	plugin: TaggableTagsPlugin,
 	resolutions: Map<NamingConflict, ConflictResolution[]>,
 	progressModal: MigrationProgressModal
-): Promise<{ renamed: number; errors: number }> {
+): Promise<{ renamed: number; errors: number; collisionParentsByFolderPath: Map<string, string[]> }> {
 	let renamed = 0;
 	let errors = 0;
+	const collisionParentsByFolderPath = new Map<string, string[]>();
 	
 	for (const [conflict, conflictResolutions] of resolutions) {
 		for (const resolution of conflictResolutions) {
@@ -392,17 +445,26 @@ async function applyConflictResolutionsSafe(
 			
 			try {
 				const result = await applyConflictResolutions(plugin, new Map([[conflict, [resolution]]]));
-				renamed += result;
+				renamed += result.renamedCount;
+				for (const [path, parents] of result.collisionParentsByFolderPath) {
+					const existing = collisionParentsByFolderPath.get(path) ?? [];
+					for (const p of parents) {
+						if (!existing.some(e => plugin.tagIndex.tagsMatch(e, p))) {
+							existing.push(p);
+						}
+					}
+					collisionParentsByFolderPath.set(path, existing);
+				}
 			} catch (error) {
 				errors++;
 				const source = resolution.source;
-				const path = source.folder?.path || source.existingTagFile?.path || 'unknown';
+				const path = source.folder?.path || source.existingTagFile?.path || source.matchingNote?.path || 'unknown';
 				progressModal.addError('conflicts', `Failed to rename: ${String(error)}`, path);
 			}
 		}
 	}
 	
-	return { renamed, errors };
+	return { renamed, errors, collisionParentsByFolderPath };
 }
 
 /**
@@ -427,7 +489,8 @@ async function flattenNestedTagsSafe(
 async function createTagFilesForAllFoldersSafe(
 	plugin: TaggableTagsPlugin,
 	excludedFolders: string[],
-	progressModal: MigrationProgressModal
+	progressModal: MigrationProgressModal,
+	collisionParentsByFolderPath: Map<string, string[]> = new Map()
 ): Promise<{ created: number; errors: number }> {
 	let created = 0;
 	let errors = 0;
@@ -443,64 +506,82 @@ async function createTagFilesForAllFoldersSafe(
 			return;
 		}
 		
-		// Check if excluded
 		const isExcluded = excludedFolders.some(ef => 
 			folder.path === ef || folder.path.startsWith(ef + '/')
 		);
 		if (isExcluded) return;
+
+		let currentFolder = folder;
+		let collisionParents = collisionParentsByFolderPath.get(folder.path) ?? [];
 		
-		// Get the normalized tag name for lookups, but use folder.name for file names
-		const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
-		if (tagName) {
-			const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-			if (!existingTagFile) {
-				try {
-					// Determine parent tag
-					const parentFolder = folder.parent;
-					const parentTag = parentFolder && !parentFolder.isRoot()
-						? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
-						: null;
-					
-					// Check for existing file with matching name (use folder.name, not normalized tagName)
-					const matchingFile = findMatchingFileInFolderForMigration(plugin, folder, folder.name);
+		try {
+			const disambiguated = await disambiguateFolderIfNeeded(plugin, currentFolder);
+			if (disambiguated.failed) {
+				errors++;
+				progressModal.addError(
+					'tag-files',
+					'Failed to rename folder to avoid naming conflict',
+					currentFolder.path
+				);
+			} else {
+				currentFolder = disambiguated.folder;
+				if (disambiguated.collisionParents.length > 0) {
+					collisionParents = [
+						...collisionParents,
+						...disambiguated.collisionParents.filter(
+							p => !collisionParents.some(e => plugin.tagIndex.tagsMatch(e, p))
+						),
+					];
+					collisionParentsByFolderPath.set(currentFolder.path, collisionParents);
+				}
+			}
+
+			const tagName = plugin.tagIndex.getTagFromFolderPath(currentFolder.path);
+			if (tagName) {
+				const parentFolder = currentFolder.parent;
+				const parentTag = parentFolder && !parentFolder.isRoot()
+					? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
+					: null;
+
+				const mapParents = collisionParentsByFolderPath.get(currentFolder.path) ?? collisionParents;
+				const safeParents = collectSafeParentTags(plugin, tagName, parentTag, mapParents);
+
+				const existingTagFile = plugin.tagIndex.getTagFile(tagName);
+				if (!existingTagFile) {
+					const matchingFile = findMatchingFileInFolder(plugin, currentFolder, currentFolder.name);
 					if (matchingFile) {
-						await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
+						await addTagPropertiesToFile(plugin, matchingFile, tagName, safeParents);
 						plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
 						created++;
 					} else {
-						// Create new tag file - use folder.name for the filename
-						const filePath = `${folder.path}/${folder.name}.md`;
+						const displayName = plugin.tagIndex.toDisplayName(tagName);
+						const filePath = `${currentFolder.path}/${displayName}.md`;
 						
-						// Check if file already exists at this path
 						const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
 						if (existingFileAtPath) {
-							// File exists - convert it to a tag file if it's a markdown file
 							if (existingFileAtPath instanceof TFile && existingFileAtPath.extension === 'md') {
-								await addTagPropertiesToFile(plugin, existingFileAtPath, tagName, parentTag);
+								await addTagPropertiesToFile(plugin, existingFileAtPath, tagName, safeParents);
 								plugin.tagIndex.onTagFileCreated(existingFileAtPath, tagName);
 								created++;
 							}
-							// Otherwise just skip - not an error
 						} else {
-							const content = await generateTagFileContent(plugin, tagName, parentTag);
+							const content = await generateTagFileContent(plugin, tagName, safeParents);
 							const file = await plugin.app.vault.create(filePath, content);
 							plugin.tagIndex.onTagFileCreated(file, tagName);
 							created++;
 						}
 					}
-				} catch (error) {
-					// Only report actual errors, not "file already exists"
-					const errorMsg = String(error);
-					if (!errorMsg.includes('File already exists')) {
-						errors++;
-						progressModal.addError('tag-files', `Failed to create tag file: ${errorMsg}`, folder.path);
-					}
 				}
+			}
+		} catch (error) {
+			const errorMsg = String(error);
+			if (!errorMsg.includes('File already exists')) {
+				errors++;
+				progressModal.addError('tag-files', `Failed to create tag file: ${errorMsg}`, currentFolder.path);
 			}
 		}
 		
-		// Process children
-		for (const child of folder.children) {
+		for (const child of currentFolder.children) {
 			if (child instanceof TFolder) {
 				await processFolder(child);
 			}
@@ -577,11 +658,9 @@ async function removeSelfTagFromFile(plugin: TaggableTagsPlugin, file: TFile): P
 	if (!Array.isArray(tags)) return;
 	
 	// Check if the file is tagged with its own tag
-	const normalizedTagName = plugin.tagIndex.normalizeTag(tagName);
 	const hasSelfTag = tags.some((t: unknown) => {
 		if (typeof t !== 'string') return false;
-		const normalizedT = plugin.tagIndex.normalizeTag(t);
-		return normalizedT === normalizedTagName;
+		return plugin.tagIndex.tagsMatch(t, tagName);
 	});
 	
 	if (hasSelfTag) {
@@ -590,28 +669,11 @@ async function removeSelfTagFromFile(plugin: TaggableTagsPlugin, file: TFile): P
 			if (Array.isArray(fm.tags)) {
 				fm.tags = fm.tags.filter((t: unknown) => {
 					if (typeof t !== 'string') return true;
-					const normalizedT = plugin.tagIndex.normalizeTag(t);
-					return normalizedT !== normalizedTagName;
+					return !plugin.tagIndex.tagsMatch(t, tagName);
 				});
 			}
 		});
 	}
-}
-
-/**
- * Find a file in a folder with a name matching the folder name (for migration).
- * Uses the original folder name (not normalized) for matching.
- */
-function findMatchingFileInFolderForMigration(plugin: TaggableTagsPlugin, folder: TFolder, folderName: string): TFile | null {
-	for (const child of folder.children) {
-		if (!(child instanceof TFile) || child.extension !== 'md') continue;
-		if (plugin.tagIndex.isTagFile(child)) continue;
-		
-		if (namesMatch(child.basename, folderName)) {
-			return child;
-		}
-	}
-	return null;
 }
 
 /**
@@ -714,18 +776,36 @@ function previewTagFilesForFolders(
 }
 
 /**
- * Find a file in a folder with a name matching the tag name.
+ * Preview tag files that will be created for tags no folder accounts for.
+ * Mirrors `createMissingTagFiles`, which lands these at the vault root.
+ *
+ * Nested tags never appear here: the index skips any tag containing '/', so paths
+ * still awaiting flattening are covered by the flatten section of the preview instead.
  */
-function findMatchingFileInFolder(plugin: TaggableTagsPlugin, folder: TFolder, tagName: string): TFile | null {
-	for (const child of folder.children) {
-		if (!(child instanceof TFile) || child.extension !== 'md') continue;
-		if (plugin.tagIndex.isTagFile(child)) continue;
-		
-		if (namesMatch(child.basename, tagName)) {
-			return child;
+function previewTagFilesForRemainingTags(
+	plugin: TaggableTagsPlugin,
+	coveredByFolders: Array<{ tagName: string }>
+): Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> {
+	const result: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> = [];
+
+	for (const tagName of plugin.tagIndex.getTagsWithoutFiles()) {
+		if (coveredByFolders.some(c => plugin.tagIndex.tagsMatch(c.tagName, tagName))) {
+			continue;
 		}
+
+		result.push({
+			tagName,
+			// Migration forces existingFileBehavior to 'auto', so createTagFile adopts
+			// a matching root-level note rather than creating a new one.
+			fromExisting: findMatchingNonTagFile(plugin, tagName, {
+				onlyUnder: plugin.app.vault.getRoot(),
+				directChildOnly: true,
+			}),
+			parentTag: null,
+		});
 	}
-	return null;
+
+	return result;
 }
 
 /**
@@ -747,88 +827,4 @@ function previewAllRedundantTags(plugin: TaggableTagsPlugin): Array<{ file: TFil
 	}
 	
 	return result;
-}
-
-/**
- * Create tag files for all folders that don't have one.
- */
-async function createTagFilesForAllFolders(
-	plugin: TaggableTagsPlugin,
-	excludedFolders: string[]
-): Promise<number> {
-	let count = 0;
-	const root = plugin.app.vault.getRoot();
-	
-	async function processFolder(folder: TFolder): Promise<void> {
-		if (folder.isRoot()) {
-			for (const child of folder.children) {
-				if (child instanceof TFolder) {
-					await processFolder(child);
-				}
-			}
-			return;
-		}
-		
-		// Check if excluded
-		const isExcluded = excludedFolders.some(ef => 
-			folder.path === ef || folder.path.startsWith(ef + '/')
-		);
-		if (isExcluded) return;
-		
-		// Check if this folder needs a tag file
-		const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
-		if (tagName) {
-			const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-			if (!existingTagFile) {
-				// Determine parent tag
-				const parentFolder = folder.parent;
-				const parentTag = parentFolder && !parentFolder.isRoot()
-					? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
-					: null;
-				
-				// Check for existing file with matching name
-				const matchingFile = findMatchingFileInFolder(plugin, folder, tagName);
-				if (matchingFile) {
-					await addTagPropertiesToFile(plugin, matchingFile, tagName, parentTag);
-					plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
-				} else {
-					// Create new tag file
-					const filePath = `${folder.path}/${tagName}.md`;
-					const content = await generateTagFileContent(plugin, tagName, parentTag);
-					const file = await plugin.app.vault.create(filePath, content);
-					plugin.tagIndex.onTagFileCreated(file, tagName);
-				}
-				count++;
-			}
-		}
-		
-		// Process children
-		for (const child of folder.children) {
-			if (child instanceof TFolder) {
-				await processFolder(child);
-			}
-		}
-	}
-	
-	await processFolder(root);
-	return count;
-}
-
-/**
- * Remove redundant parent tags from all files in the vault.
- */
-async function removeAllRedundantParentTags(plugin: TaggableTagsPlugin): Promise<number> {
-	let count = 0;
-	const files = plugin.app.vault.getMarkdownFiles();
-	
-	for (const file of files) {
-		if (plugin.tagIndex.isTagFile(file)) continue;
-		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
-		if (isInExcludedFolder(plugin, file)) continue;
-		
-		const removed = await removeRedundantParentTags(plugin, file);
-		count += removed.length;
-	}
-	
-	return count;
 }
