@@ -7,7 +7,7 @@ import {
 	toComparisonKey,
 } from './name-matching';
 import { joinTagNameSegments } from './tag-naming';
-import { markPluginInitiatedChange } from '../sync/file-rename-sync';
+import { markPluginInitiatedChange, updateTagProperty } from '../sync/file-rename-sync';
 
 export interface DisambiguateResult {
 	/** Folder after possible rename (same reference if Obsidian updated it in place) */
@@ -216,34 +216,120 @@ export function findFoldersWithLeafTag(
 }
 
 /**
- * Whether this folder should keep the shared leaf tag name.
- * The folder holding the tag note wins; otherwise shallowest folder, ties by path.
+ * Shallowest claimant wins, ties broken by path.
  */
-export function isLeafTagKeeper(
-	plugin: TaggableTagsPlugin,
-	folder: TFolder
-): boolean {
-	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
-	if (!tagName) return true;
-
-	// An existing tag note settles ownership. Renaming its folder re-points the note
-	// to the new name, orphaning the original tag that notes still reference — and
-	// leaf folders, being deepest, would otherwise always lose the depth tiebreak.
-	const tagFile = plugin.tagIndex.getTagFile(tagName);
-	if (tagFile) {
-		return tagFile.parent?.path === folder.path;
-	}
-
-	const claimants: TFolder[] = findFoldersWithLeafTag(plugin, tagName);
-	if (claimants.length <= 1) {
-		return claimants.length === 0 || claimants[0].path === folder.path;
-	}
-
+function sortClaimantsByPrecedence(claimants: TFolder[]): void {
 	claimants.sort((a, b) => {
 		const depthDiff = folderDepth(a) - folderDepth(b);
 		if (depthDiff !== 0) return depthDiff;
 		return a.path.localeCompare(b.path);
 	});
+}
+
+/**
+ * Which folder keeps each shared leaf tag name, keyed by tag comparison key.
+ * A `null` value means no folder keeps it, because a root-level tag note owns the name.
+ */
+export type LeafTagKeepers = Map<string, TFolder | null>;
+
+/**
+ * Decide every keeper up front, before anything is renamed.
+ *
+ * Deciding lazily during a folder walk makes the answer depend on the order folders
+ * happen to be visited, and lets it change mid-walk as the walk creates notes and
+ * renames folders. Deciding once against a single snapshot makes the outcome
+ * deterministic, and lets callers show the plan before applying it.
+ */
+export function computeLeafTagKeepers(plugin: TaggableTagsPlugin): LeafTagKeepers {
+	const claimantsByKey = new Map<string, { tagName: string; folders: TFolder[] }>();
+
+	function walk(folder: TFolder): void {
+		if (!folder.isRoot()) {
+			const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
+			if (tagName) {
+				const key = toComparisonKey(tagName, plugin.settings);
+				const entry = claimantsByKey.get(key);
+				if (entry) {
+					entry.folders.push(folder);
+				} else {
+					claimantsByKey.set(key, { tagName, folders: [folder] });
+				}
+			}
+		}
+		for (const child of folder.children) {
+			if (child instanceof TFolder) {
+				walk(child);
+			}
+		}
+	}
+
+	walk(plugin.app.vault.getRoot());
+
+	const keepers: LeafTagKeepers = new Map();
+	for (const [key, { tagName, folders }] of claimantsByKey) {
+		const claimants = [...folders];
+
+		const tagFile = plugin.tagIndex.getTagFile(tagName);
+		if (tagFile?.parent && !tagFile.parent.isRoot()) {
+			if (!claimants.some(f => f.path === tagFile.parent!.path)) {
+				claimants.push(tagFile.parent);
+			}
+		}
+
+		// A tag note at the vault root owns the name outright, so no folder keeps it
+		if (claimants.length <= 1 && tagFile && (!tagFile.parent || tagFile.parent.isRoot())) {
+			keepers.set(key, null);
+			continue;
+		}
+
+		sortClaimantsByPrecedence(claimants);
+		keepers.set(key, claimants[0]);
+	}
+
+	return keepers;
+}
+
+/**
+ * Whether this folder should keep the shared leaf tag name.
+ * Consults `keepers` when given, otherwise decides against the current vault state.
+ */
+export function isLeafTagKeeper(
+	plugin: TaggableTagsPlugin,
+	folder: TFolder,
+	keepers?: LeafTagKeepers
+): boolean {
+	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
+	if (!tagName) return true;
+
+	if (keepers) {
+		// Folders match by reference so the plan survives an ancestor being renamed.
+		// A key the plan never saw means the folder appeared afterwards, so fall
+		// through and decide live rather than answering for a state we didn't plan.
+		const key = toComparisonKey(tagName, plugin.settings);
+		if (keepers.has(key)) {
+			return keepers.get(key) === folder;
+		}
+	}
+
+	const claimants: TFolder[] = findFoldersWithLeafTag(plugin, tagName);
+
+	const tagFile = plugin.tagIndex.getTagFile(tagName);
+	if (tagFile?.parent && !tagFile.parent.isRoot()) {
+		if (!claimants.some(f => f.path === tagFile.parent!.path)) {
+			claimants.push(tagFile.parent);
+		}
+	}
+
+	if (claimants.length <= 1) {
+		// Sole folder claimant — still not keeper if a root-level tag file exists
+		// and this folder isn't that file's parent (file at vault root / dedicated path)
+		if (tagFile && (!tagFile.parent || tagFile.parent.isRoot())) {
+			return false;
+		}
+		return claimants.length === 0 || claimants[0].path === folder.path;
+	}
+
+	sortClaimantsByPrecedence(claimants);
 
 	return claimants[0].path === folder.path;
 }
@@ -254,7 +340,8 @@ export function isLeafTagKeeper(
  */
 export function folderNeedsDisambiguation(
 	plugin: TaggableTagsPlugin,
-	folder: TFolder
+	folder: TFolder,
+	keepers?: LeafTagKeepers
 ): boolean {
 	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
 	if (!tagName) return false;
@@ -263,7 +350,7 @@ export function folderNeedsDisambiguation(
 		return true;
 	}
 
-	if (!isLeafTagKeeper(plugin, folder)) {
+	if (!isLeafTagKeeper(plugin, folder, keepers)) {
 		return true;
 	}
 
@@ -387,14 +474,15 @@ function fileNameTaken(
  */
 export async function disambiguateFolderIfNeeded(
 	plugin: TaggableTagsPlugin,
-	folder: TFolder
+	folder: TFolder,
+	keepers?: LeafTagKeepers
 ): Promise<DisambiguateResult> {
 	const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
 	if (!tagName) {
 		return { folder, tagName: '', renamed: false, failed: false, collisionParents: [] };
 	}
 
-	if (!folderNeedsDisambiguation(plugin, folder)) {
+	if (!folderNeedsDisambiguation(plugin, folder, keepers)) {
 		return { folder, tagName, renamed: false, failed: false, collisionParents: [] };
 	}
 
@@ -407,17 +495,16 @@ export async function disambiguateFolderIfNeeded(
 		return { folder, tagName, renamed: false, failed: true, collisionParents: [] };
 	}
 
+	const newTagName =
+		plugin.tagIndex.getTagFromFolderPath(renamedFolder.path) || uniqueCanonical;
+
 	const matchingFile =
 		findMatchingFileInFolder(plugin, renamedFolder, tagName) ??
 		findMatchingFileInFolder(plugin, renamedFolder, renamedFolder.name);
 	if (matchingFile) {
-		await renameFileInPlace(plugin, matchingFile, plugin.tagIndex.toDisplayName(
-			plugin.tagIndex.getTagFromFolderPath(renamedFolder.path) || uniqueCanonical
-		));
+		await renameFileInPlace(plugin, matchingFile, plugin.tagIndex.toDisplayName(newTagName));
+		await handOverTagIdentity(plugin, matchingFile, newTagName);
 	}
-
-	const newTagName =
-		plugin.tagIndex.getTagFromFolderPath(renamedFolder.path) || uniqueCanonical;
 
 	// Keep original leaf as an extra parent when that tag still exists (or a keeper folder will own it)
 	const collisionParents: string[] = [];
@@ -483,6 +570,35 @@ async function renameFolderWithFallback(
 	}
 
 	return null;
+}
+
+/**
+ * Point a renamed tag note at its new tag.
+ *
+ * Without this the note keeps its old `tag:` property while its filename says otherwise,
+ * and a later pass reconciles the mismatch by silently overwriting the property. That
+ * turns "a folder was renamed" into "a tag was reassigned", leaving the original tag
+ * with no note of its own and no record that it happened.
+ */
+async function handOverTagIdentity(
+	plugin: TaggableTagsPlugin,
+	file: TFile,
+	newTagName: string
+): Promise<void> {
+	if (!plugin.tagIndex.isTagFile(file)) return;
+
+	const currentTag = plugin.tagIndex.getTagPropertyValue(file);
+	if (!currentTag || plugin.tagIndex.tagsMatch(currentTag, newTagName)) {
+		return;
+	}
+
+	// Without the marker this reads as a manual retag and the sync handler would
+	// rename the old tag across every note in the vault.
+	markPluginInitiatedChange(file.path);
+	await updateTagProperty(plugin, file, newTagName);
+
+	plugin.tagIndex.onTagFileDeleted(file.path);
+	plugin.tagIndex.onTagFileCreated(file, newTagName);
 }
 
 async function renameFileInPlace(

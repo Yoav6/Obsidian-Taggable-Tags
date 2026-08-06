@@ -15,7 +15,12 @@ import {
 } from '../utils/tag-ordering';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
 import { findMatchingFileInFolder, findMatchingNonTagFile } from '../utils/name-matching';
-import { disambiguateFolderIfNeeded, collectSafeParentTags } from '../utils/cycle-prevention';
+import {
+	disambiguateFolderIfNeeded,
+	collectSafeParentTags,
+	computeLeafTagKeepers,
+	isLeafTagKeeper,
+} from '../utils/cycle-prevention';
 import { createMissingTagFiles } from '../sync/auto-create';
 import { MigrationSettingsModal } from '../ui/migration-settings-modal';
 import { MigrationPreviewModal } from '../ui/migration-preview-modal';
@@ -495,6 +500,9 @@ async function createTagFilesForAllFoldersSafe(
 	let created = 0;
 	let errors = 0;
 	const root = plugin.app.vault.getRoot();
+	// Settle every keeper before the walk starts, so renaming one folder can't change
+	// the answer for another and the result doesn't depend on traversal order.
+	const keepers = computeLeafTagKeepers(plugin);
 	
 	async function processFolder(folder: TFolder): Promise<void> {
 		if (folder.isRoot()) {
@@ -515,7 +523,7 @@ async function createTagFilesForAllFoldersSafe(
 		let collisionParents = collisionParentsByFolderPath.get(folder.path) ?? [];
 		
 		try {
-			const disambiguated = await disambiguateFolderIfNeeded(plugin, currentFolder);
+			const disambiguated = await disambiguateFolderIfNeeded(plugin, currentFolder, keepers);
 			if (disambiguated.failed) {
 				errors++;
 				progressModal.addError(
@@ -547,7 +555,15 @@ async function createTagFilesForAllFoldersSafe(
 				const safeParents = collectSafeParentTags(plugin, tagName, parentTag, mapParents);
 
 				const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-				if (!existingTagFile) {
+				const ownedByThisFolder = existingTagFile?.parent?.path === currentFolder.path;
+				// A tag note sitting in some other folder doesn't settle anything: if this
+				// folder is the planned keeper, the note belongs here. The other folder is
+				// disambiguated to its own name, so this doesn't produce two notes.
+				const shouldCreate =
+					!ownedByThisFolder &&
+					(!existingTagFile || isLeafTagKeeper(plugin, currentFolder, keepers));
+
+				if (shouldCreate) {
 					const matchingFile = findMatchingFileInFolder(plugin, currentFolder, currentFolder.name);
 					if (matchingFile) {
 						await addTagPropertiesToFile(plugin, matchingFile, tagName, safeParents);
