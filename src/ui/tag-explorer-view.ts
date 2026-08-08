@@ -311,13 +311,18 @@ export class TagExplorerView extends ItemView {
 		const untaggedFiles = (this.plugin.settings.showUntaggedFiles && this.filterTags.size === 0 && this.contentMode !== 'tags')
 			? this.plugin.tagIndex.getUntaggedFiles()
 			: [];
+
+		// Get vault-root attachments if enabled and not filtering
+		const rootAttachments = (this.plugin.settings.displayAttachments && this.filterTags.size === 0 && this.contentMode !== 'tags')
+			? this.getRootAttachments()
+			: [];
 		
 		// Determine what content to show based on content mode
 		const showTags = this.contentMode !== 'files';
 		const showFiles = this.contentMode !== 'tags';
 		
 		const hasContent = (showTags && tagsToRender.tags.length > 0) || 
-			(showFiles && (tagsToRender.files.length > 0 || untaggedFiles.length > 0));
+			(showFiles && (tagsToRender.files.length > 0 || untaggedFiles.length > 0 || rootAttachments.length > 0));
 		
 		if (!hasContent) {
 			// Render empty state outside the tree to avoid hover/click issues
@@ -394,7 +399,15 @@ export class TagExplorerView extends ItemView {
 					for (const file of untaggedFiles) {
 						this.renderFileNode(tree, file, 0, false, 'file:__root__');
 					}
+					// Attachments referenced by untagged files, shown alongside them
+					const untaggedAttachments = this.collectAlongsideAttachments(untaggedFiles);
+					this.renderAttachmentGroup(tree, untaggedAttachments, '__attachments__:__untagged__', 0);
 				}
+			}
+
+			// Render vault-root attachments (only when not filtering and showing files)
+			if (this.plugin.settings.displayAttachments && showFiles && rootAttachments.length > 0 && this.viewMode === 'tree') {
+				this.renderAttachmentGroup(tree, rootAttachments, '__attachments__:root', 0);
 			}
 		}
 
@@ -534,7 +547,8 @@ export class TagExplorerView extends ItemView {
 		});
 		// Create a set of child tag names for quick lookup
 		const files = this.getVisibleFilesUnderTag(primaryTag, children, fullAncestorSet);
-		const hasChildren = children.length > 0 || files.length > 0;
+		const attachmentsHere = this.collectTagAttachments(group.tags, files);
+		const hasChildren = children.length > 0 || files.length > 0 || attachmentsHere.length > 0;
 
 		// Single tags without a file get parent-level graying; combined tags
 		// use per-part tag-name-no-file instead (avoids stacked opacity).
@@ -659,6 +673,9 @@ export class TagExplorerView extends ItemView {
 			for (const file of files.sort((a, b) => a.basename.localeCompare(b.basename))) {
 				this.renderFileNode(childrenContainer, file, depth + 1, false, `file:${treePath}`);
 			}
+
+			// Then render attachments (folder-connected + referenced alongside notes)
+			this.renderAttachmentGroup(childrenContainer, attachmentsHere, `__attachments__:${treePath}`, depth + 1);
 		}
 	}
 
@@ -690,6 +707,12 @@ export class TagExplorerView extends ItemView {
 		// File name
 		const fileName = fileTitle.createEl('span', { cls: 'file-name' });
 		fileName.textContent = file.basename;
+
+		// Show the file format on the right for non-markdown files (like Obsidian's file explorer)
+		if (file.extension !== 'md') {
+			const fileTag = fileTitle.createEl('span', { cls: 'nav-file-tag' });
+			fileTag.textContent = file.extension.toUpperCase();
+		}
 
 		// Click to open file (Ctrl+click opens in new tab)
 		fileTitle.addEventListener('click', async (e) => {
@@ -751,6 +774,209 @@ export class TagExplorerView extends ItemView {
 			for (const file of files) {
 				this.renderFileNode(childrenContainer, file, 1, false, 'file:__untagged__');
 			}
+			// Attachments referenced by untagged files, shown alongside them
+			const attachments = this.collectAlongsideAttachments(files);
+			this.renderAttachmentGroup(childrenContainer, attachments, '__attachments__:__untagged__', 2);
+		}
+	}
+
+	/**
+	 * Collect referenced attachments for a set of notes (for "alongside" placement).
+	 * Returns an empty array when attachments are disabled, the alongside setting is
+	 * "no", or the content mode hides files.
+	 */
+	private collectAlongsideAttachments(notes: TFile[]): TFile[] {
+		if (!this.plugin.settings.displayAttachments
+			|| this.plugin.settings.attachmentsAlongside === 'no'
+			|| this.contentMode === 'tags') {
+			return [];
+		}
+		const result: TFile[] = [];
+		for (const note of notes) {
+			for (const file of this.plugin.tagIndex.getReferencedAttachments(note)) {
+				result.push(file);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Collect the attachments to show under a tag: folder-connected attachments for
+	 * the tag(s), plus (when enabled) attachments referenced by the notes shown there.
+	 */
+	private collectTagAttachments(tags: string[], notesUnderTag: TFile[]): TFile[] {
+		if (!this.plugin.settings.displayAttachments || this.contentMode === 'tags') {
+			return [];
+		}
+		const result: TFile[] = [];
+		for (const tag of tags) {
+			for (const file of this.plugin.tagIndex.getFolderAttachmentsForTag(tag)) {
+				result.push(file);
+			}
+		}
+		result.push(...this.collectAlongsideAttachments(notesUnderTag));
+		return result;
+	}
+
+	/**
+	 * Compute the attachments shown at the vault root, per the placement rules:
+	 * - folder-connected attachments live under their tag (never at root)
+	 * - unreferenced attachments are always at root
+	 * - referenced attachments are at root unless the alongside setting is "instead"
+	 */
+	private getRootAttachments(): TFile[] {
+		const alongside = this.plugin.settings.attachmentsAlongside;
+		const result: TFile[] = [];
+		for (const file of this.plugin.tagIndex.getAllAttachments()) {
+			if (this.plugin.tagIndex.isFolderConnectedAttachment(file)) {
+				continue;
+			}
+			if (this.plugin.tagIndex.isAttachmentReferenced(file)) {
+				if (alongside !== 'instead') {
+					result.push(file);
+				}
+			} else {
+				result.push(file);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Deduplicate attachments by path and sort by basename.
+	 */
+	private dedupSortedAttachments(attachments: TFile[]): TFile[] {
+		const seen = new Set<string>();
+		const result: TFile[] = [];
+		for (const file of attachments) {
+			if (seen.has(file.path)) continue;
+			seen.add(file.path);
+			result.push(file);
+		}
+		return result.sort((a, b) => a.basename.localeCompare(b.basename));
+	}
+
+	/**
+	 * Render a set of attachments according to the "Group attachments" setting:
+	 * inline, under a collapsible "Attachments" group, or (when split) that group
+	 * divided into "Referenced" and "Unreferenced" subgroups.
+	 *
+	 * With "split", subgroups are only used when the group contains both referenced
+	 * and unreferenced attachments. If it only has referenced attachments, they are
+	 * listed directly under "Attachments"; if it only has unreferenced attachments,
+	 * they are listed directly under "Unreferenced attachments".
+	 */
+	private renderAttachmentGroup(container: HTMLElement, attachments: TFile[], keyBase: string, depth: number): void {
+		if (!this.plugin.settings.displayAttachments) return;
+		const unique = this.dedupSortedAttachments(attachments);
+		if (unique.length === 0) return;
+
+		const grouping = this.plugin.settings.attachmentGrouping;
+
+		if (grouping === 'no') {
+			for (const file of unique) {
+				this.renderFileNode(container, file, depth, false, `attachment:${keyBase}`);
+			}
+			return;
+		}
+
+		// Determine whether "split" actually needs subgroups and the group's label.
+		let referenced: TFile[] = [];
+		let unreferenced: TFile[] = [];
+		let useSubgroups = false;
+		let labelText = 'Attachments';
+		if (grouping === 'split') {
+			referenced = unique.filter(f => this.plugin.tagIndex.isAttachmentReferenced(f));
+			unreferenced = unique.filter(f => !this.plugin.tagIndex.isAttachmentReferenced(f));
+			useSubgroups = referenced.length > 0 && unreferenced.length > 0;
+			if (!useSubgroups && referenced.length === 0) {
+				// Only unreferenced attachments - label the group accordingly.
+				labelText = 'Unreferenced attachments';
+			}
+		}
+
+		// 'yes' or 'split': collapsible group folder
+		const isExpanded = this.expandedPaths.has(keyBase);
+		const item = container.createEl('div', {
+			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
+		});
+
+		const title = item.createEl('div', {
+			cls: 'tree-item-self is-clickable tag-item attachment-group-item',
+		});
+		title.style.paddingLeft = `${depth * 12 + 4}px`;
+
+		const expandIcon = title.createEl('div', {
+			cls: 'nav-folder-collapse-indicator collapse-icon'
+		});
+		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
+
+		const label = title.createEl('span', { cls: 'tag-name attachment-group-label' });
+		label.textContent = labelText;
+
+		title.addEventListener('click', (e) => {
+			e.stopPropagation();
+			if (isExpanded) {
+				this.expandedPaths.delete(keyBase);
+			} else {
+				this.expandedPaths.add(keyBase);
+			}
+			this.refresh();
+		});
+
+		if (!isExpanded) return;
+
+		const childrenContainer = item.createEl('div', { cls: 'tree-item-children nav-folder-children' });
+
+		if (grouping === 'split' && useSubgroups) {
+			this.renderAttachmentSubgroup(childrenContainer, 'Referenced', `${keyBase}:ref`, depth + 1, referenced);
+			this.renderAttachmentSubgroup(childrenContainer, 'Unreferenced', `${keyBase}:unref`, depth + 1, unreferenced);
+		} else {
+			for (const file of unique) {
+				this.renderFileNode(childrenContainer, file, depth + 1, false, `attachment:${keyBase}`);
+			}
+		}
+	}
+
+	/**
+	 * Render a collapsible subgroup ("Referenced" / "Unreferenced") of attachments.
+	 */
+	private renderAttachmentSubgroup(container: HTMLElement, labelText: string, key: string, depth: number, files: TFile[]): void {
+		if (files.length === 0) return;
+
+		const isExpanded = this.expandedPaths.has(key);
+		const item = container.createEl('div', {
+			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
+		});
+
+		const title = item.createEl('div', {
+			cls: 'tree-item-self is-clickable tag-item attachment-subgroup-item',
+		});
+		title.style.paddingLeft = `${depth * 12 + 4}px`;
+
+		const expandIcon = title.createEl('div', {
+			cls: 'nav-folder-collapse-indicator collapse-icon'
+		});
+		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
+
+		const label = title.createEl('span', { cls: 'tag-name attachment-subgroup-label' });
+		label.textContent = labelText;
+
+		title.addEventListener('click', (e) => {
+			e.stopPropagation();
+			if (isExpanded) {
+				this.expandedPaths.delete(key);
+			} else {
+				this.expandedPaths.add(key);
+			}
+			this.refresh();
+		});
+
+		if (!isExpanded) return;
+
+		const childrenContainer = item.createEl('div', { cls: 'tree-item-children nav-folder-children' });
+		for (const file of files) {
+			this.renderFileNode(childrenContainer, file, depth + 1, false, `attachment:${key}`);
 		}
 	}
 
@@ -2240,6 +2466,25 @@ export class TagExplorerView extends ItemView {
 			}
 			.taggable-tags-explorer .untagged-item:hover .untagged-label {
 				text-decoration: none;
+			}
+			/* Attachment groups */
+			.taggable-tags-explorer .attachment-group-label,
+			.taggable-tags-explorer .attachment-subgroup-label {
+				color: var(--text-muted);
+				font-style: italic;
+			}
+			.taggable-tags-explorer .attachment-group-item:hover .attachment-group-label,
+			.taggable-tags-explorer .attachment-subgroup-item:hover .attachment-subgroup-label {
+				text-decoration: none;
+			}
+			/* File format label (right side, like Obsidian's file explorer) */
+			.taggable-tags-explorer .nav-file-tag {
+				flex-shrink: 0;
+				font-size: var(--font-smaller);
+				line-height: 1.4;
+				text-transform: uppercase;
+				color: var(--text-faint);
+				background-color: transparent;
 			}
 			/* Filter bar */
 			.taggable-tags-explorer .filter-bar {

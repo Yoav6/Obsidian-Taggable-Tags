@@ -65,13 +65,16 @@ tags: [programming-languages, data-science-tools]
     - **Rearrange tag order**: A command that lets you change the order tags are listed in the active note (since obsidian doesn't have a good native way to do that). This is mainly useful for the folder syncronization feature which is based on tag order. Otherwise tag order doesn't matter.
 - **Exception tags**: Each tag has an "exception to" property. Put the name of another tag there, and notes tagged with both tags won't appear under the latter. e.g, If there's a music album you like, but there's one song there you don't like, make #disliked an exception to #liked, tag the album with #liked, and that specific song with #disliked. Now when you look at that album under the #liked heading, you won't see that song. You can also write "all" as the property value, and this will make children of that tag appear only under that tag. This is useful for tags like #archive and #private. 
 - **Tag registry**: When inserting a tag in obsidian, obsidian gives autocomplete suggestions for tags that already exist. If you have a tagnote but haven't applied its tag to any note, obsidian won't suggest that tag in autocomplete. There's no way to directly add autocomplete suggestions, so as a workaround, there's a setting for creating a tag registry note that gets tagged with all the tags (and gets properly filtered from the explorer view) so they always appear in autocomplete suggestions. 
+- **Attachments**: Attachments (any non-markdown file) can be shown in the explorer view even though they can't be tagged directly. An attachment is considered "referenced" if any note links or embeds it. Turn this on with the **Display attachments** setting, then choose:
+    - **Group attachments**: show attachments inline, under a collapsible "Attachments" group, or under a group split into "Referenced" and "Unreferenced" subgroups. When splitting, subgroups only appear if a group contains both referenced and unreferenced attachments. A group with only referenced attachments lists them directly under "Attachments", and a group with only unreferenced attachments lists them directly under an "Unreferenced attachments" group.
+    - **Display referenced attachments alongside referencing note**: show referenced attachments next to the notes that reference them — either *in addition to* or *instead of* the vault root. Unreferenced attachments at the vault root will always be shown here.
+    - Additionally, if an attachment lives in a folder that is connected to a tag (via folder synchronization), it is shown under that tag even if no note references it.
 - ****:
 
 More obscure features and details are covered in Q&A.md
 
 ## Roadmap
 - **Migration**: get the migration feature working. This is the most important feature right now. Without it the plugin won't be very useful for existing vaults.
-- **Attachments**: attachments are tricky, because they cannot be tagged directly, so currently they do not show in the explorer view. In the future I would like to add some way to relate attachments to tags and show them in the explorer view.
 - **Graph View**: currently this plugin kinda breaks the graph view (mainly because there's a duplication between the tag itself and the tag note, which are not even connected in the graph since the tagnote isn't tagged with itself). I hope it's possible to modify the graph view to work better with this plugin.
 - 
 

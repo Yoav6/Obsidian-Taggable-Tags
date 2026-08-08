@@ -8,6 +8,8 @@ export type TagClickBehavior = 'replace' | 'add' | 'default';
 export type FolderTagBehavior = 'ask' | 'always' | 'never';
 export type ExistingFileBehavior = 'ask' | 'auto' | 'off';
 export type EmptyFolderBehavior = 'delete' | 'create-tag' | 'ask' | 'nothing';
+export type AttachmentGrouping = 'no' | 'yes' | 'split';
+export type AttachmentAlongside = 'no' | 'addition' | 'instead';
 
 export interface TaggableTagsSettings {
 	autoCreateFiles: boolean;
@@ -24,6 +26,10 @@ export interface TaggableTagsSettings {
 	combineIdenticalTags: boolean;
 	showUntaggedFiles: boolean;
 	groupUntaggedFiles: boolean;  // true = show in "Untagged" group, false = show directly at top level
+	// Attachment settings
+	displayAttachments: boolean;              // Master toggle for showing attachments in the explorer
+	attachmentGrouping: AttachmentGrouping;   // How attachments are grouped: inline, under "Attachments", or split by referenced/unreferenced
+	attachmentsAlongside: AttachmentAlongside; // Where referenced attachments appear relative to their referencing note
 	// Tag click behavior
 	tagClickBehavior: TagClickBehavior;  // What happens when clicking a tag in notes
 	// Folder sync settings
@@ -57,6 +63,10 @@ export const DEFAULT_SETTINGS: TaggableTagsSettings = {
 	combineIdenticalTags: true,
 	showUntaggedFiles: true,
 	groupUntaggedFiles: true,
+	// Attachment defaults
+	displayAttachments: true,
+	attachmentGrouping: 'split',
+	attachmentsAlongside: 'instead',
 	// Tag click behavior default
 	tagClickBehavior: 'replace',
 	// Folder sync defaults
@@ -228,6 +238,48 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.groupUntaggedFiles)
 					.onChange(async (value) => {
 						this.plugin.settings.groupUntaggedFiles = value;
+						await this.plugin.saveSettings();
+						this.refreshExplorerView();
+					}));
+		}
+
+		new Setting(containerEl)
+			.setName('Display attachments')
+			.setDesc('Show non-markdown files (attachments) in the explorer view.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.displayAttachments)
+				.onChange(async (value) => {
+					this.plugin.settings.displayAttachments = value;
+					await this.plugin.saveSettings();
+					this.refreshExplorerView();
+					this.display(); // Refresh to show/hide related settings
+				}));
+
+		if (this.plugin.settings.displayAttachments) {
+			new Setting(containerEl)
+				.setName('Group attachments')
+				.setDesc('Show attachments in a collapsible "Attachments" group. "Split" divides the group into "Referenced" and "Unreferenced" subgroups.')
+				.addDropdown(dropdown => dropdown
+					.addOption('no', 'No (show directly)')
+					.addOption('yes', 'Yes')
+					.addOption('split', 'Yes, split between referenced and unreferenced')
+					.setValue(this.plugin.settings.attachmentGrouping)
+					.onChange(async (value) => {
+						this.plugin.settings.attachmentGrouping = value as AttachmentGrouping;
+						await this.plugin.saveSettings();
+						this.refreshExplorerView();
+					}));
+
+			new Setting(containerEl)
+				.setName('Display referenced attachments alongside referencing note')
+				.setDesc('Show attachments next to the notes that reference them, in addition to or instead of the vault root.')
+				.addDropdown(dropdown => dropdown
+					.addOption('no', 'No')
+					.addOption('addition', 'Yes, in addition to vault root')
+					.addOption('instead', 'Yes, instead of vault root')
+					.setValue(this.plugin.settings.attachmentsAlongside)
+					.onChange(async (value) => {
+						this.plugin.settings.attachmentsAlongside = value as AttachmentAlongside;
 						await this.plugin.saveSettings();
 						this.refreshExplorerView();
 					}));

@@ -35,6 +35,14 @@ export class TagIndex {
 	private tagExceptions: Map<string, Set<string>> = new Map();
 	// exclusive tags (comparison keys)
 	private exclusiveTags: Set<string> = new Set();
+	// markdown note path -> attachments (non-md files) it references
+	private noteToAttachments: Map<string, TFile[]> = new Map();
+	// attachment path -> markdown notes that reference it
+	private attachmentReferrers: Map<string, Set<TFile>> = new Map();
+	// tag comparison key -> attachments whose parent folder maps to that tag
+	private tagToFolderAttachments: Map<string, Set<TFile>> = new Map();
+	// paths of attachments whose parent folder maps to a known tag
+	private folderConnectedAttachmentPaths: Set<string> = new Set();
 
 	constructor(app: App, settings: TaggableTagsSettings) {
 		this.app = app;
@@ -531,6 +539,10 @@ export class TagIndex {
 		this.tagToFiles.clear();
 		this.tagExceptions.clear();
 		this.exclusiveTags.clear();
+		this.noteToAttachments.clear();
+		this.attachmentReferrers.clear();
+		this.tagToFolderAttachments.clear();
+		this.folderConnectedAttachmentPaths.clear();
 
 		// Get all markdown files
 		const files = this.app.vault.getMarkdownFiles();
@@ -685,6 +697,110 @@ export class TagIndex {
 				this.tagChildren.set(k, new Set());
 			}
 		}
+
+		this.buildAttachmentIndex();
+	}
+
+	/**
+	 * Build the attachment maps: which attachments each note references (and the reverse),
+	 * plus which attachments live in a folder that maps to a known tag.
+	 * Must run after the tag maps are populated so folder-connection can be validated.
+	 */
+	private buildAttachmentIndex(): void {
+		// Reference maps from resolved links (covers both [[links]] and ![[embeds]]).
+		const resolvedLinks = this.app.metadataCache.resolvedLinks;
+		for (const sourcePath of Object.keys(resolvedLinks)) {
+			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
+			if (!(sourceFile instanceof TFile) || sourceFile.extension !== 'md') {
+				continue;
+			}
+			const targets = resolvedLinks[sourcePath];
+			const attachments: TFile[] = [];
+			for (const targetPath of Object.keys(targets)) {
+				const targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+				if (!(targetFile instanceof TFile) || targetFile.extension === 'md') {
+					continue;
+				}
+				attachments.push(targetFile);
+				if (!this.attachmentReferrers.has(targetFile.path)) {
+					this.attachmentReferrers.set(targetFile.path, new Set());
+				}
+				this.attachmentReferrers.get(targetFile.path)!.add(sourceFile);
+			}
+			if (attachments.length > 0) {
+				this.noteToAttachments.set(sourcePath, attachments);
+			}
+		}
+
+		// Folder-connected attachments: parent folder name resolves to a known tag.
+		const knownTagKeys = new Set<string>();
+		for (const k of this.tagToFiles.keys()) knownTagKeys.add(k);
+		for (const k of this.tagToFile.keys()) knownTagKeys.add(k);
+
+		for (const file of this.app.vault.getFiles()) {
+			if (file.extension === 'md') {
+				continue;
+			}
+			const parentPath = file.parent?.path;
+			if (!parentPath) {
+				continue;
+			}
+			const folderTag = this.getTagFromFolderPath(parentPath);
+			if (!folderTag) {
+				continue;
+			}
+			const k = this.key(folderTag);
+			if (!knownTagKeys.has(k)) {
+				continue;
+			}
+			if (!this.tagToFolderAttachments.has(k)) {
+				this.tagToFolderAttachments.set(k, new Set());
+			}
+			this.tagToFolderAttachments.get(k)!.add(file);
+			this.folderConnectedAttachmentPaths.add(file.path);
+		}
+	}
+
+	/**
+	 * Get all attachments (non-markdown files) in the vault, sorted by basename.
+	 */
+	getAllAttachments(): TFile[] {
+		return this.app.vault.getFiles()
+			.filter(file => file.extension !== 'md')
+			.sort((a, b) => a.basename.localeCompare(b.basename));
+	}
+
+	/**
+	 * Get the attachments (non-markdown files) referenced by a note, sorted by basename.
+	 */
+	getReferencedAttachments(note: TFile): TFile[] {
+		const attachments = this.noteToAttachments.get(note.path);
+		if (!attachments) return [];
+		return [...attachments].sort((a, b) => a.basename.localeCompare(b.basename));
+	}
+
+	/**
+	 * Whether an attachment is referenced by at least one markdown note.
+	 */
+	isAttachmentReferenced(file: TFile): boolean {
+		const referrers = this.attachmentReferrers.get(file.path);
+		return referrers != null && referrers.size > 0;
+	}
+
+	/**
+	 * Get attachments whose parent folder maps to the given tag, sorted by basename.
+	 */
+	getFolderAttachmentsForTag(tag: string): TFile[] {
+		const attachments = this.tagToFolderAttachments.get(this.key(tag));
+		if (!attachments) return [];
+		return [...attachments].sort((a, b) => a.basename.localeCompare(b.basename));
+	}
+
+	/**
+	 * Whether an attachment lives in a folder that maps to a known tag.
+	 */
+	isFolderConnectedAttachment(file: TFile): boolean {
+		return this.folderConnectedAttachmentPaths.has(file.path);
 	}
 
 	/**
