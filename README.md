@@ -13,12 +13,13 @@ A powerful Obsidian plugin turning tags into taggable tag notes, while synchroni
 ## Main Features
 
 - **Tag Notes**: Create notes that corrospond to a tag in your vault by adding a "tag" property to the note with the tag's name. When hovering over a tag and holding ctrl, you will see a preview of that note. Ctrl + left-click will open the note.
-- **Automatic tag note creation**: When you use a new tag anywhere in your vault, automatically create a corresponding tag note file is.
+- **Automatic tagnote creation**: When you use a new tag anywhere in your vault, automatically create a corresponding tagnote file.
 - **Tag hierarchy via tags**: Tag your tags by adding tags to the tag's note and the plugin will automatically index all the child-parent relatioships between tags and files. This allows a many-to-many relationship between tags (unlike nested tags which are strictly hierarchical).
 - **Tag Explorer view**: Explore this structure with a file-explorer-like sidebar view that shows your tags as both folders and notes (like in the folder notes plugin). Each tag can be clicked to open its corrosponding note, and expanded to show its child tags and notes. Items with multiple parents appear under each parent.
-- **Filtering**: Add tags as positive or negative filters to search and view only a subset of your tag tree. Click a tag in a note frontmatter or body to add it as a filter.
+- **Graph view**: Tag nodes and tagnote nodes in the graph view (both global and local) are combined so you can see all the tag-tag, tag-file, and file-file relatioships in your vault.
+- **Filtering**: Add tags as positive or negative filters and view only a subset of your tag tree. Click a tag in a note frontmatter or body to add it as a filter.
 - **Rename sync**: If you change the tag property in a tag file, all usages of that tag throughout your vault are updated. You can also use the "Rename tag" command to rename a tag everywhere at once.
-- **Folder syncronization**: recreate your tag hierarchy as a folder hierarchy based on the first tag of each note, so if you or someone else ever needs to access your notes without access to software which cannot parse tags, a sensible hierarchy will still exist, and mirror your folder structure in tags so oyu can still interact with folder without breaking the tag-folder corrospondence.
+- **Folder syncronization**: recreate your tag hierarchy as a folder hierarchy based on the first tag of each note, so if you or someone else ever needs to access your notes without access to software capable of parsing tags, a sensible hierarchy will still exist, and mirror your folder structure in tags so you can still interact with folders without breaking the tag-folder corrospondence.
 - **Tag manipulation**: There's a bunch of useful tag manipulation features like deleting, splitting, combining, rearranging, and renaming tags which means you never have to think about your tag hierarchy in advance of creating notes or tags.
 - **Migration wizard (WIP)**: Since most users will want to use this plugin with a collction of notes that is currently based on folders for organization, the plugin has a migration wizard that helps you easily trnasition from one workflow to the other. This feature is currently a work in progress, it still doesn't work well even with my own vault.
 
@@ -75,8 +76,6 @@ More obscure features and details are covered in Q&A.md
 
 ## Roadmap
 - **Migration**: get the migration feature working. This is the most important feature right now. Without it the plugin won't be very useful for existing vaults.
-- **Graph View**: currently this plugin kinda breaks the graph view (mainly because there's a duplication between the tag itself and the tag note, which are not even connected in the graph since the tagnote isn't tagged with itself). I hope it's possible to modify the graph view to work better with this plugin.
-- 
 
 ### Commands
 

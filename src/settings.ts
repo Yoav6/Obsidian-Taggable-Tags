@@ -3,6 +3,7 @@ import type TaggableTagsPlugin from './main';
 import { getTagExplorerView } from './ui/tag-explorer-view';
 import { syncEntireVault } from './sync/folder-sync';
 import { sanitizeTagSpaceSeparatorInput } from './utils/tag-naming';
+import { refreshGraphLeaves } from './graph/graph-patch';
 
 export type TagClickBehavior = 'replace' | 'add' | 'default';
 export type FolderTagBehavior = 'ask' | 'always' | 'never';
@@ -48,6 +49,8 @@ export interface TaggableTagsSettings {
 	// Tag registry note settings
 	enableTagRegistry: boolean;             // Enable a registry note that lists all tags for autocomplete
 	tagRegistryPath: string;                // Path to the tag registry note (e.g., "_tag-registry.md")
+	/** Merge tag nodes into tag notes and show hierarchy in the core graph view. */
+	graphCompatEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: TaggableTagsSettings = {
@@ -85,6 +88,7 @@ export const DEFAULT_SETTINGS: TaggableTagsSettings = {
 	// Tag registry defaults
 	enableTagRegistry: false,
 	tagRegistryPath: '_tag-registry.md',
+	graphCompatEnabled: true,
 };
 
 export class TaggableTagsSettingTab extends PluginSettingTab {
@@ -412,6 +416,7 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 					if (value) {
 						await this.plugin.updateTagRegistry();
 					}
+					refreshGraphLeaves(this.plugin);
 					this.display(); // Refresh to show/hide path setting
 				}));
 
@@ -426,6 +431,7 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 						this.plugin.settings.tagRegistryPath = value || '_tag-registry.md';
 						await this.plugin.saveSettings();
 						await this.plugin.updateTagRegistry();
+						refreshGraphLeaves(this.plugin);
 					}));
 		}
 
@@ -463,6 +469,17 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.confirmUnusedTagDeletion = value;
 					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Graph view compatibility')
+			.setDesc('Merge tag nodes into their tag notes in Obsidian\'s graph view, show tag hierarchy edges, and style tag notes with the theme\'s tag color. The tag registry note is always hidden from the graph. Uses internal Obsidian APIs and may need updates after Obsidian upgrades.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.graphCompatEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.graphCompatEnabled = value;
+					await this.plugin.saveSettings();
+					refreshGraphLeaves(this.plugin);
 				}));
 
 		if (scrollEl) {

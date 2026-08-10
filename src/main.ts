@@ -15,6 +15,7 @@ import { migrateVault } from './commands/migrate-vault';
 import { findCircularTags } from './commands/find-circular-tags';
 import { refreshTagIndex } from './commands/refresh-tag-index';
 import { sanitizeTagSpaceSeparatorInput } from './utils/tag-naming';
+import { setupGraphCompat, teardownGraphCompat } from './graph/graph-patch';
 
 export default class TaggableTagsPlugin extends Plugin {
 	settings: TaggableTagsSettings;
@@ -80,6 +81,7 @@ export default class TaggableTagsPlugin extends Plugin {
 			// Set up UI features
 			setupHoverPreview(this);
 			setupTagClickNavigation(this);
+			setupGraphCompat(this);
 		});
 
 		// Add settings tab
@@ -138,6 +140,7 @@ export default class TaggableTagsPlugin extends Plugin {
 	}
 
 	onunload() {
+		teardownGraphCompat(this);
 		// Detach any tag explorer views
 		this.app.workspace.detachLeavesOfType(TAG_EXPLORER_VIEW_TYPE);
 	}
@@ -209,6 +212,9 @@ Note that since this file isn't supposed to be viewed, the view isn't refreshed 
 		);
 		if (typeof this.settings.replaceSeparatorsWithSpaces !== 'boolean') {
 			this.settings.replaceSeparatorsWithSpaces = true;
+		}
+		if (typeof this.settings.graphCompatEnabled !== 'boolean') {
+			this.settings.graphCompatEnabled = true;
 		}
 	}
 
