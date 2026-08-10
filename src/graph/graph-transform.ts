@@ -119,6 +119,96 @@ function colorTagNoteNodes(
 	}
 }
 
+/**
+ * Resolve a tag to a graph node id preferring an existing tag-note path, else #tag.
+ */
+function resolveTagGraphId(
+	plugin: TaggableTagsPlugin,
+	tag: string,
+	nodes: Record<string, GraphNode>,
+	resolveTagNodeId: (nodeId: string) => string | null
+): string {
+	const path = resolveTagNodeId(withHash(tag));
+	if (path) {
+		if (!nodes[path]) {
+			nodes[path] = emptyNode('');
+		}
+		return path;
+	}
+
+	const hashId = withHash(plugin.tagIndex.normalizeTag(tag));
+	for (const id of Object.keys(nodes)) {
+		if (nodes[id].type === 'tag' && plugin.tagIndex.tagsMatch(stripHash(id), tag)) {
+			return id;
+		}
+	}
+	if (!nodes[hashId]) {
+		nodes[hashId] = emptyNode('tag');
+	}
+	return hashId;
+}
+
+/**
+ * Local graph expands from the file path only, before our setData patch.
+ * Notes that link to #tag (not the tag note) are missing. Re-attach the tag's
+ * direct relations from TagIndex when the centered file is a tag note.
+ */
+function expandLocalTagNoteRelations(
+	plugin: TaggableTagsPlugin,
+	nodes: Record<string, GraphNode>,
+	localFile: string,
+	resolveTagNodeId: (nodeId: string) => string | null
+): void {
+	const file = plugin.app.vault.getAbstractFileByPath(localFile);
+	if (!file || !('extension' in file)) return;
+	const tfile = file as import('obsidian').TFile;
+	if (!plugin.tagIndex.isTagFile(tfile)) return;
+
+	const tag =
+		plugin.tagIndex.getTagForFilePath(localFile) ??
+		plugin.tagIndex.fileToTagName(tfile);
+	if (!tag) return;
+
+	if (!nodes[localFile]) {
+		nodes[localFile] = emptyNode('');
+	}
+
+	// Files tagged with this tag → same as note → #tag edges in the global graph
+	for (const tagged of plugin.tagIndex.getFilesWithTag(tag)) {
+		if (tagged.path === localFile) continue;
+		if (plugin.tagIndex.isTagRegistryNote(tagged)) continue;
+		if (!nodes[tagged.path]) {
+			nodes[tagged.path] = emptyNode('');
+		}
+		nodes[tagged.path].links[localFile] = true;
+	}
+
+	// Parent tags (tag note frontmatter)
+	for (const parent of plugin.tagIndex.getParentTags(tag)) {
+		const parentId = resolveTagGraphId(plugin, parent, nodes, resolveTagNodeId);
+		if (parentId === localFile) continue;
+		nodes[localFile].links[parentId] = true;
+	}
+
+	// Child tags
+	for (const child of plugin.tagIndex.getChildTags(tag)) {
+		const childId = resolveTagGraphId(plugin, child, nodes, resolveTagNodeId);
+		if (childId === localFile) continue;
+		if (!nodes[childId]) {
+			nodes[childId] = emptyNode(childId.startsWith('#') ? 'tag' : '');
+		}
+		nodes[childId].links[localFile] = true;
+	}
+
+	// Ensure the #tag node itself collapses into the center on the next pass
+	const hashId = withHash(tag);
+	if (nodes[hashId] && hashId !== localFile) {
+		// leave for collapseTagNodes
+	} else if (!nodes[hashId]) {
+		// Optional: no separate tag node needed; relations already point at localFile
+	}
+}
+
 function hideRegistryNode(plugin: TaggableTagsPlugin, nodes: Record<string, GraphNode>): void {
 	const registryPath = normalizePath(plugin.settings.tagRegistryPath || '');
 	if (registryPath && nodes[registryPath]) {
@@ -176,7 +266,8 @@ function collapseTagNodes(
 		if (fillTag) {
 			fileNode.color = fillTag;
 		}
-		// Keep as file node so click opens the note
+		// Keep as file node so click opens the note (not tag search).
+		// Preserve "focused" so the local-graph center keeps its focus color.
 		if (fileNode.type === 'tag') {
 			fileNode.type = '';
 		}
@@ -289,7 +380,17 @@ export function transformGraphData(
 
 	const showTags = filterOptions.showTags !== false;
 	const showOrphans = filterOptions.showOrphans !== false;
+	const localFile =
+		typeof filterOptions.localFile === 'string' && filterOptions.localFile
+			? filterOptions.localFile
+			: null;
 	const { resolveTagNodeId } = buildTagLookups(plugin);
+
+	// Local graph is filtered to neighbors of the file path before setData.
+	// Expand tag-note centers with TagIndex relations (files using the tag, parents, children).
+	if (showTags && localFile) {
+		expandLocalTagNoteRelations(plugin, nodes, localFile, resolveTagNodeId);
+	}
 
 	if (!showOrphans) {
 		reinjectTagNotes(plugin, nodes);

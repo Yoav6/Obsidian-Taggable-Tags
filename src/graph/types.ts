@@ -31,6 +31,8 @@ export type GraphRenderer = {
 export type GraphFilterOptions = {
 	showTags?: boolean;
 	showOrphans?: boolean;
+	/** Set on local graph: path of the centered file. */
+	localFile?: string | null;
 	[key: string]: unknown;
 };
 

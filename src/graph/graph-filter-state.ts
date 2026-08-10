@@ -13,5 +13,6 @@ export function readGraphFilterOptions(leaf: GraphLeaf): GraphFilterOptions {
 	return {
 		showTags: options.showTags !== false,
 		showOrphans: options.showOrphans !== false,
+		localFile: typeof options.localFile === 'string' ? options.localFile : null,
 	};
 }
