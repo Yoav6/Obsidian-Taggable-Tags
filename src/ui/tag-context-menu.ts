@@ -6,6 +6,10 @@ import { showDeleteTagModal } from './delete-tag-modal';
 import { createTagFile } from '../sync/auto-create';
 import { markPluginInitiatedChange } from '../sync/file-rename-sync';
 
+function formatTagList(tags: string[]): string {
+	return tags.map(t => `#${t}`).join(', ');
+}
+
 /**
  * Adds tag-related context menu items to an existing menu.
  * Used to extend the editor context menu and property tag menus.
@@ -45,7 +49,7 @@ export function addTagContextMenuItems(
 	menu.addSeparator();
 
 	// Add "New" submenu with create options (and replace options if in note context)
-	addNewSubmenu(plugin, menu, tagName, undefined, sourceFile);
+	addNewSubmenu(plugin, menu, [tagName], undefined, sourceFile);
 
 	menu.addSeparator();
 
@@ -85,54 +89,53 @@ export function addTagContextMenuItems(
 export function addNewSubmenu(
 	plugin: TaggableTagsPlugin,
 	menu: Menu,
-	tagName: string,
+	tagNames: string[],
 	onComplete?: () => void,
 	sourceFile?: TFile
 ): void {
+	const multi = tagNames.length > 1;
+
 	menu.addItem((item) => {
 		const submenu = (item as any)
 			.setTitle('New')
 			.setIcon('plus')
 			.setSubmenu();
 
-		// Create new file with tag
 		submenu.addItem((subItem: any) => {
 			subItem
-				.setTitle('New file with tag')
+				.setTitle(multi ? 'New file with tags' : 'New file with tag')
 				.setIcon('file-plus')
 				.onClick(async () => {
-					await createNewFileWithTag(plugin, tagName);
+					await createNewFileWithTags(plugin, tagNames);
 					if (onComplete) onComplete();
 				});
 		});
 
 		submenu.addSeparator();
 
-		// Create child tag
 		submenu.addItem((subItem: any) => {
 			subItem
 				.setTitle('New child tag')
 				.setIcon('corner-down-right')
 				.onClick(() => {
-					new CreateChildTagModal(plugin, tagName, onComplete).open();
+					new CreateChildTagModal(plugin, tagNames, onComplete).open();
 				});
 		});
 
-		// Create parent tag
 		submenu.addItem((subItem: any) => {
 			subItem
 				.setTitle('New parent tag')
 				.setIcon('corner-right-up')
 				.onClick(() => {
-					new CreateParentTagModal(plugin, tagName, onComplete).open();
+					openCreateParentTagModal(plugin, tagNames, onComplete);
 				});
 		});
 
-		// Add replace options only if we have a source file (note body/properties context)
-		if (sourceFile) {
+		// Replace options only apply to a single tag in note context
+		if (sourceFile && tagNames.length === 1) {
+			const tagName = tagNames[0];
 			submenu.addSeparator();
 
-			// Replace with new child tag
 			submenu.addItem((subItem: any) => {
 				subItem
 					.setTitle('Replace with child tag')
@@ -142,7 +145,6 @@ export function addNewSubmenu(
 					});
 			});
 
-			// Replace with new parent tag
 			submenu.addItem((subItem: any) => {
 				subItem
 					.setTitle('Replace with parent tag')
@@ -153,6 +155,35 @@ export function addNewSubmenu(
 			});
 		}
 	});
+}
+
+/**
+ * Adds a top-level "New parent tag" menu item for mixed tag/file selections.
+ * The new parent is linked to selected tags and added as a regular tag on selected files.
+ */
+export function addNewParentTagMenuItem(
+	plugin: TaggableTagsPlugin,
+	menu: Menu,
+	childTags: string[],
+	childFiles: TFile[],
+	onComplete?: () => void
+): void {
+	menu.addItem((item) => {
+		item.setTitle('New parent tag')
+			.setIcon('corner-right-up')
+			.onClick(() => {
+				openCreateParentTagModal(plugin, childTags, onComplete, childFiles);
+			});
+	});
+}
+
+function openCreateParentTagModal(
+	plugin: TaggableTagsPlugin,
+	childTags: string[],
+	onComplete?: () => void,
+	childFiles?: TFile[]
+): void {
+	new CreateParentTagModal(plugin, childTags, onComplete, childFiles).open();
 }
 
 /**
@@ -302,20 +333,19 @@ class RenameTagModal extends Modal {
  * Creates a new note file in the vault root and tags it with the specified tag.
  * Opens the file and focuses on the inline title for immediate renaming.
  */
-async function createNewFileWithTag(plugin: TaggableTagsPlugin, tagName: string): Promise<void> {
+async function createNewFileWithTags(plugin: TaggableTagsPlugin, tagNames: string[]): Promise<void> {
 	try {
-		// Generate a unique filename
 		const baseName = 'Untitled';
 		let fileName = `${baseName}.md`;
 		let counter = 1;
-		
+
 		while (plugin.app.vault.getAbstractFileByPath(fileName)) {
 			fileName = `${baseName} ${counter}.md`;
 			counter++;
 		}
-		
-		// Create file with the tag in frontmatter
-		const content = `---\ntags:\n  - ${tagName}\n---\n`;
+
+		const tagsYaml = tagNames.map(t => `  - ${t}`).join('\n');
+		const content = `---\ntags:\n${tagsYaml}\n---\n`;
 		const file = await plugin.app.vault.create(fileName, content);
 		
 		// Open the new file
@@ -353,24 +383,27 @@ async function createNewFileWithTag(plugin: TaggableTagsPlugin, tagName: string)
  */
 class CreateChildTagModal extends Modal {
 	private plugin: TaggableTagsPlugin;
-	private parentTag: string;
+	private parentTags: string[];
 	private inputEl: HTMLInputElement | null = null;
 	private onComplete: (() => void) | null;
 
-	constructor(plugin: TaggableTagsPlugin, parentTag: string, onComplete?: () => void) {
+	constructor(plugin: TaggableTagsPlugin, parentTags: string[], onComplete?: () => void) {
 		super(plugin.app);
 		this.plugin = plugin;
-		this.parentTag = parentTag;
+		this.parentTags = parentTags;
 		this.onComplete = onComplete ?? null;
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
-		
-		contentEl.createEl('h3', { text: `Create child tag of #${this.parentTag}` });
-		
+		const multi = this.parentTags.length > 1;
+
+		contentEl.createEl('h3', { text: `Create child tag of ${formatTagList(this.parentTags)}` });
+
 		const descEl = contentEl.createEl('p', { cls: 'setting-item-description' });
-		descEl.textContent = 'The new tag will be created with the parent tag in its tags property.';
+		descEl.textContent = multi
+			? 'The new tag will be created with all selected tags in its tags property.'
+			: 'The new tag will be created with the parent tag in its tags property.';
 		descEl.style.marginBottom = '16px';
 		
 		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
@@ -451,16 +484,17 @@ class CreateChildTagModal extends Modal {
 				return;
 			}
 			
-			// Add the parent tag to the new tag file's tags property
-			await addTagToFile(this.plugin, tagFile, this.parentTag);
-			
-			// Rebuild the index to reflect the new parent-child relationship
+			// Add all parent tags to the new tag file's tags property
+			for (const parentTag of this.parentTags) {
+				await addTagToFile(this.plugin, tagFile, parentTag);
+			}
+
 			await this.plugin.tagIndex.rebuild();
-			
-			// Open the new tag file
+
 			await this.plugin.app.workspace.getLeaf().openFile(tagFile);
-			
-			new Notice(`Created child tag #${newTagName} under #${this.parentTag}`);
+
+			const parentLabel = formatTagList(this.parentTags);
+			new Notice(`Created child tag #${newTagName} under ${parentLabel}`);
 			
 			// Call completion callback if provided
 			if (this.onComplete) {
@@ -480,28 +514,51 @@ class CreateChildTagModal extends Modal {
 
 /**
  * Modal for creating a parent tag.
- * Creates a new tag file and adds it to the original tag's tags property.
+ * Creates a new tag file and adds it to selected child tags' tags properties.
+ * Optionally also tags selected non-tag files with the new parent (without converting them to tags).
  */
 class CreateParentTagModal extends Modal {
 	private plugin: TaggableTagsPlugin;
-	private childTag: string;
+	private childTags: string[];
+	private childFiles: TFile[];
 	private inputEl: HTMLInputElement | null = null;
 	private onComplete: (() => void) | null;
 
-	constructor(plugin: TaggableTagsPlugin, childTag: string, onComplete?: () => void) {
+	constructor(
+		plugin: TaggableTagsPlugin,
+		childTags: string[],
+		onComplete?: () => void,
+		childFiles?: TFile[]
+	) {
 		super(plugin.app);
 		this.plugin = plugin;
-		this.childTag = childTag;
+		this.childTags = childTags;
+		this.childFiles = childFiles ?? [];
 		this.onComplete = onComplete ?? null;
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
-		
-		contentEl.createEl('h3', { text: `Create parent tag for #${this.childTag}` });
-		
+		const hasFiles = this.childFiles.length > 0;
+		const hasTags = this.childTags.length > 0;
+		const multi = this.childTags.length + this.childFiles.length > 1;
+
+		contentEl.createEl('h3', { text: `Create parent tag for ${this.formatTargets()}` });
+
 		const descEl = contentEl.createEl('p', { cls: 'setting-item-description' });
-		descEl.textContent = 'The original tag will be updated to include the new parent in its tags property.';
+		if (hasTags && hasFiles) {
+			descEl.textContent = multi
+				? 'Selected tags will gain the new parent in their tags property. Selected files will be tagged with it (without becoming tag files).'
+				: 'The selected tag will gain the new parent, and the selected file will be tagged with it.';
+		} else if (hasFiles) {
+			descEl.textContent = multi
+				? 'Each selected file will be tagged with the new parent (without becoming tag files).'
+				: 'The selected file will be tagged with the new parent (without becoming a tag file).';
+		} else {
+			descEl.textContent = multi
+				? 'Each selected tag will be updated to include the new parent in its tags property.'
+				: 'The original tag will be updated to include the new parent in its tags property.';
+		}
 		descEl.style.marginBottom = '16px';
 		
 		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
@@ -544,6 +601,19 @@ class CreateParentTagModal extends Modal {
 		setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
+	private formatTargets(): string {
+		const parts: string[] = [];
+		if (this.childTags.length > 0) {
+			parts.push(formatTagList(this.childTags));
+		}
+		if (this.childFiles.length === 1) {
+			parts.push(this.childFiles[0].basename);
+		} else if (this.childFiles.length > 1) {
+			parts.push(`${this.childFiles.length} files`);
+		}
+		return parts.join(' and ');
+	}
+
 	private async performCreate(): Promise<void> {
 		if (!this.inputEl) return;
 		
@@ -582,25 +652,29 @@ class CreateParentTagModal extends Modal {
 				return;
 			}
 			
-			// Get the child tag's file and add the new parent to its tags
-			const childTagFile = this.plugin.tagIndex.getTagFile(this.childTag);
-			if (childTagFile) {
-				await addTagToFile(this.plugin, childTagFile, newTagName);
-			} else {
-				// If child tag doesn't have a file, create one first
-				const newChildFile = await createTagFile(this.plugin, this.childTag);
-				if (newChildFile) {
-					await addTagToFile(this.plugin, newChildFile, newTagName);
+			// Link each child tag to the new parent
+			for (const childTag of this.childTags) {
+				const childTagFile = this.plugin.tagIndex.getTagFile(childTag);
+				if (childTagFile) {
+					await addTagToFile(this.plugin, childTagFile, newTagName);
+				} else {
+					const newChildFile = await createTagFile(this.plugin, childTag);
+					if (newChildFile) {
+						await addTagToFile(this.plugin, newChildFile, newTagName);
+					}
 				}
 			}
-			
-			// Rebuild the index to reflect the new parent-child relationship
+
+			// Tag selected non-tag files with the new parent (do not convert them to tag files)
+			for (const file of this.childFiles) {
+				await addTagToFile(this.plugin, file, newTagName);
+			}
+
 			await this.plugin.tagIndex.rebuild();
-			
-			// Open the new parent tag file
+
 			await this.plugin.app.workspace.getLeaf().openFile(parentTagFile);
-			
-			new Notice(`Created parent tag #${newTagName} for #${this.childTag}`);
+
+			new Notice(`Created parent tag #${newTagName} for ${this.formatTargets()}`);
 			
 			// Call completion callback if provided
 			if (this.onComplete) {

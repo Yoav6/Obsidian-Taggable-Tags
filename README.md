@@ -58,8 +58,10 @@ tags: [programming-languages, data-science-tools]
 
 ## More features
 
-- **Tag Manipulation**
-    - **Create child/parent tag**: Context menu action to create a new note and make it either a child or a parent tag of the current tag.
+- **Multiselect**: The explorer view supports selecting multiple items. Different options are displayed depending on which and how many items are selected.
+- **Tag manipulation**
+    - **Create child/parent tag**: Context menu action to create a new note and make it either a child or a parent tag of selected tags.
+    - **Merge tags**: Select two tags in the explorer view, right click one of them to open the context menu, and select 'Merge tags'. A modal will open where you can choose which tag will merged into the other. The remaining tag will have the combined children, parents, and content of both tags.
     - **Merge tag into parents**: Context menu action for tags with one parent which deletes the tag and replaces all its instances with instances of its parent.
     - **Split tag**: Context menu action for tags with multiple parents which deletes the tag and replaces all its instances with instances of its parents.
     - **Create tag from filters**: Option that appears when filtering for two or more tags. Creates a new tag and replaces all instances of the tags with it in files which apply to the filters. Can be reversed with "split tag".

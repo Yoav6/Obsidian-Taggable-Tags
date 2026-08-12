@@ -6,7 +6,7 @@ import { filterSafeParentTags } from './cycle-prevention';
  * Parse YAML frontmatter from file content.
  * Returns the frontmatter object and the body content.
  */
-function parseFrontmatter(content: string): { frontmatter: Record<string, unknown> | null; body: string } {
+export function parseFrontmatter(content: string): { frontmatter: Record<string, unknown> | null; body: string } {
 	const frontmatterRegex = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 	const match = content.match(frontmatterRegex);
 	
@@ -62,7 +62,7 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
 /**
  * Serialize frontmatter object back to YAML string.
  */
-function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
+export function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
 	const lines: string[] = [];
 	
 	for (const [key, value] of Object.entries(frontmatter)) {

@@ -1,10 +1,11 @@
-import { ItemView, WorkspaceLeaf, TFile, setIcon, Modal, Notice } from 'obsidian';
+import { ItemView, WorkspaceLeaf, TFile, setIcon, Modal, Notice, Menu } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { renameTag } from '../sync/rename-command';
 import { createTagFile } from '../sync/auto-create';
 import { markPluginInitiatedChange } from '../sync/file-rename-sync';
 import { removeTagFromFile } from '../sync/delete-tag';
-import { addDeleteTagSubmenu, addNewSubmenu } from './tag-context-menu';
+import { addDeleteTagSubmenu, addNewSubmenu, addNewParentTagMenuItem } from './tag-context-menu';
+import { MergeTagsModal } from './merge-tags-modal';
 
 export const TAG_EXPLORER_VIEW_TYPE = 'taggable-tags-explorer';
 
@@ -46,6 +47,9 @@ export class TagExplorerView extends ItemView {
 	private pendingRevealKey: string | null = null;
 	private pendingRevealFilePath: string | null = null;
 	private highlightTimeout: number | null = null;
+	// Multi-select state keyed by instance key (and file path for file rows)
+	private selectedItems: Set<string> = new Set();
+	private firstSelectedKey: string | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: TaggableTagsPlugin) {
 		super(leaf);
@@ -76,6 +80,314 @@ export class TagExplorerView extends ItemView {
 		} else {
 			this.expandedPaths.delete(treePath);
 		}
+	}
+
+	/** Build a unique selection key from a selectable row element */
+	private getSelectionKey(el: HTMLElement): string | null {
+		const instanceKey = el.getAttribute('data-instance-key');
+		if (!instanceKey) return null;
+		const path = el.getAttribute('data-path');
+		return path ? `${instanceKey}|${path}` : instanceKey;
+	}
+
+	private findSelectableElement(key: string): HTMLElement | null {
+		const pipeIndex = key.indexOf('|');
+		if (pipeIndex !== -1) {
+			const instanceKey = key.slice(0, pipeIndex);
+			const path = key.slice(pipeIndex + 1);
+			return this.contentEl.querySelector(
+				`[data-instance-key="${CSS.escape(instanceKey)}"][data-path="${CSS.escape(path)}"]`
+			) as HTMLElement | null;
+		}
+		return this.contentEl.querySelector(
+			`[data-instance-key="${CSS.escape(key)}"]`
+		) as HTMLElement | null;
+	}
+
+	/** All visible selectable rows in flat DOM order */
+	private getVisibleSelectableKeys(): string[] {
+		const keys: string[] = [];
+		this.contentEl.querySelectorAll('.tree-item-self[data-instance-key]').forEach(el => {
+			const key = this.getSelectionKey(el as HTMLElement);
+			if (key) keys.push(key);
+		});
+		return keys;
+	}
+
+	private clearSelection(): void {
+		this.selectedItems.clear();
+		this.firstSelectedKey = null;
+		this.applySelectionStyles();
+	}
+
+	private addToSelection(key: string): void {
+		if (this.selectedItems.has(key)) {
+			this.selectedItems.delete(key);
+			if (this.firstSelectedKey === key) {
+				this.firstSelectedKey = this.selectedItems.size > 0
+					? this.selectedItems.values().next().value ?? null
+					: null;
+			}
+		} else {
+			if (this.selectedItems.size === 0) {
+				this.firstSelectedKey = key;
+			}
+			this.selectedItems.add(key);
+		}
+		this.applySelectionStyles();
+	}
+
+	private selectRange(toKey: string): void {
+		const anchorKey = this.firstSelectedKey;
+		if (!anchorKey) {
+			this.selectedItems.clear();
+			this.selectedItems.add(toKey);
+			this.firstSelectedKey = toKey;
+			this.applySelectionStyles();
+			return;
+		}
+
+		const allKeys = this.getVisibleSelectableKeys();
+		const startIdx = allKeys.indexOf(anchorKey);
+		const endIdx = allKeys.indexOf(toKey);
+		if (startIdx === -1 || endIdx === -1) {
+			this.selectedItems.clear();
+			this.selectedItems.add(toKey);
+			this.firstSelectedKey = toKey;
+			this.applySelectionStyles();
+			return;
+		}
+
+		this.selectedItems.clear();
+		const [from, to] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+		for (let i = from; i <= to; i++) {
+			this.selectedItems.add(allKeys[i]);
+		}
+		this.applySelectionStyles();
+	}
+
+	private applySelectionStyles(): void {
+		this.contentEl.querySelectorAll('.tree-item-self.is-selected').forEach(el => {
+			el.removeClass('is-selected');
+		});
+
+		const visibleKeys = new Set(this.getVisibleSelectableKeys());
+		for (const key of [...this.selectedItems]) {
+			if (!visibleKeys.has(key)) {
+				this.selectedItems.delete(key);
+				continue;
+			}
+			this.findSelectableElement(key)?.addClass('is-selected');
+		}
+
+		if (this.firstSelectedKey && !this.selectedItems.has(this.firstSelectedKey)) {
+			this.firstSelectedKey = this.selectedItems.size > 0
+				? this.selectedItems.values().next().value ?? null
+				: null;
+		}
+	}
+
+	/**
+	 * Handle Alt/Shift multi-select on left click.
+	 * Returns true if the click was handled (caller should skip default action).
+	 */
+	private handleSelectionClick(e: MouseEvent, rowEl: HTMLElement): boolean {
+		const key = this.getSelectionKey(rowEl);
+		if (!key) return false;
+
+		if (e.altKey) {
+			e.preventDefault();
+			this.addToSelection(key);
+			return true;
+		}
+
+		if (e.shiftKey) {
+			e.preventDefault();
+			this.selectRange(key);
+			return true;
+		}
+
+		if (this.selectedItems.size > 0) {
+			this.clearSelection();
+		}
+
+		return false;
+	}
+
+	/** Show the multi-select menu when right-clicking a selected item with 2+ selected. */
+	private handleSelectionContextMenu(event: MouseEvent, rowEl: HTMLElement): boolean {
+		const key = this.getSelectionKey(rowEl);
+		if (!key) return false;
+
+		if (this.selectedItems.size > 1 && this.selectedItems.has(key)) {
+			event.preventDefault();
+			event.stopPropagation();
+			this.showMultiSelectContextMenu(event);
+			return true;
+		}
+
+		if (this.selectedItems.size > 0) {
+			this.clearSelection();
+		}
+
+		return false;
+	}
+
+	private showMultiSelectContextMenu(event: MouseEvent): void {
+		const menu = new Menu();
+
+		if (this.isOnlyTagsSelected()) {
+			const selectedTags = this.getSelectedTags();
+			if (selectedTags.length === 2) {
+				const [tagA, tagB] = selectedTags;
+				menu.addItem(item => {
+					item.setTitle('Merge tags')
+						.setIcon('combine')
+						.onClick(() => {
+							new MergeTagsModal(this.plugin, tagA, tagB, () => {
+								this.clearSelection();
+								this.refresh();
+							}).open();
+						});
+				});
+			}
+			addNewSubmenu(this.plugin, menu, selectedTags, () => this.refresh());
+		} else {
+			const files = this.getSelectedNonTagFiles();
+			if (files) {
+				const app = this.plugin.app;
+				menu.addItem((item: any) => {
+					item.setTitle('Delete')
+						.setIcon('trash')
+						.setWarning(true)
+						.onClick(async () => {
+							for (const file of files) {
+								await app.fileManager.trashFile(file);
+							}
+							this.clearSelection();
+						});
+				});
+			} else {
+				const mixed = this.getSelectedMixedTagsAndFiles();
+				if (mixed) {
+					addNewParentTagMenuItem(
+						this.plugin,
+						menu,
+						mixed.tags,
+						mixed.files,
+						() => {
+							this.clearSelection();
+							this.refresh();
+						}
+					);
+				}
+			}
+		}
+
+		// @ts-ignore — Menu.items is internal
+		if (menu.items?.length === 0) return;
+		menu.showAtMouseEvent(event);
+	}
+
+	private isOnlyTagsSelected(): boolean {
+		if (this.selectedItems.size === 0) return false;
+		for (const key of this.selectedItems) {
+			const el = this.findSelectableElement(key);
+			if (!el) return false;
+			const instanceKey = el.getAttribute('data-instance-key') ?? '';
+			if (!instanceKey.startsWith('tag:')) return false;
+		}
+		return true;
+	}
+
+	/** Unique tag names from all currently selected tag rows. */
+	private getSelectedTags(): string[] {
+		const tags = new Set<string>();
+		for (const key of this.selectedItems) {
+			const el = this.findSelectableElement(key);
+			if (!el) continue;
+			const tagAttr = el.getAttribute('data-tag') ?? '';
+			for (const tag of tagAttr.split(',')) {
+				if (tag) tags.add(tag);
+			}
+		}
+		return Array.from(tags);
+	}
+
+	/** Returns deduplicated non-tag files when every selected item is a file row, otherwise null. */
+	private getSelectedNonTagFiles(): TFile[] | null {
+		const files: TFile[] = [];
+		const seenPaths = new Set<string>();
+
+		for (const key of this.selectedItems) {
+			const el = this.findSelectableElement(key);
+			if (!el) return null;
+
+			const instanceKey = el.getAttribute('data-instance-key') ?? '';
+			if (!instanceKey.startsWith('file:') && !instanceKey.startsWith('attachment:')) {
+				return null;
+			}
+
+			const path = el.getAttribute('data-path');
+			if (!path) return null;
+
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) return null;
+			if (this.plugin.tagIndex.isTagFile(file)) return null;
+
+			if (!seenPaths.has(path)) {
+				seenPaths.add(path);
+				files.push(file);
+			}
+		}
+
+		return files.length > 0 ? files : null;
+	}
+
+	/**
+	 * Returns tags and non-tag files when the selection mixes both.
+	 * Returns null if the selection is empty, tags-only, files-only, or includes unsupported items.
+	 */
+	private getSelectedMixedTagsAndFiles(): { tags: string[]; files: TFile[] } | null {
+		const tags = new Set<string>();
+		const files: TFile[] = [];
+		const seenPaths = new Set<string>();
+		let hasTag = false;
+		let hasFile = false;
+
+		for (const key of this.selectedItems) {
+			const el = this.findSelectableElement(key);
+			if (!el) return null;
+
+			const instanceKey = el.getAttribute('data-instance-key') ?? '';
+			if (instanceKey.startsWith('tag:')) {
+				hasTag = true;
+				const tagAttr = el.getAttribute('data-tag') ?? '';
+				for (const tag of tagAttr.split(',')) {
+					if (tag) tags.add(tag);
+				}
+				continue;
+			}
+
+			if (instanceKey.startsWith('file:') || instanceKey.startsWith('attachment:')) {
+				const path = el.getAttribute('data-path');
+				if (!path) return null;
+				const file = this.app.vault.getAbstractFileByPath(path);
+				if (!(file instanceof TFile)) return null;
+				if (this.plugin.tagIndex.isTagFile(file)) return null;
+				hasFile = true;
+				if (!seenPaths.has(path)) {
+					seenPaths.add(path);
+					files.push(file);
+				}
+				continue;
+			}
+
+			return null;
+		}
+
+		if (!hasTag || !hasFile) return null;
+		return { tags: Array.from(tags), files };
 	}
 
 	/**
@@ -177,6 +489,22 @@ export class TagExplorerView extends ItemView {
 				this.debouncedRefresh();
 			})
 		);
+
+		this.registerDomEvent(document, 'keydown', (e: KeyboardEvent) => {
+			if (e.key !== 'Escape' || this.selectedItems.size === 0) return;
+			if (!this.containerEl.isConnected) return;
+
+			const target = e.target as HTMLElement;
+			if (target.closest('input, textarea, [contenteditable="true"]')) return;
+			if (target.closest('.modal-container')) return;
+
+			this.clearSelection();
+
+			if (this.containerEl.contains(target)) {
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		}, { capture: true });
 	}
 
 	private refreshTimeout: number | null = null;
@@ -423,6 +751,8 @@ export class TagExplorerView extends ItemView {
 		} else if (newScrollContainer && savedScrollTop > 0) {
 			newScrollContainer.scrollTop = savedScrollTop;
 		}
+
+		this.applySelectionStyles();
 	}
 
 	/**
@@ -499,6 +829,7 @@ export class TagExplorerView extends ItemView {
 		// Left click on name opens the file (Ctrl+click opens in new tab)
 		tagNameContainer.addEventListener('click', async (e) => {
 			e.stopPropagation();
+			if (this.handleSelectionClick(e, tagTitle)) return;
 			const tagFile = this.plugin.tagIndex.getTagFile(tag);
 			if (tagFile) {
 				const leaf = e.ctrlKey || e.metaKey 
@@ -510,9 +841,17 @@ export class TagExplorerView extends ItemView {
 
 		// Right click shows context menu
 		tagTitle.addEventListener('contextmenu', (e) => {
+			if (this.handleSelectionContextMenu(e, tagTitle)) return;
 			e.preventDefault();
 			e.stopPropagation();
 			this.showTagContextMenu(e, tag, []);
+		});
+
+		// Selection on icon area (name clicks handled by tagNameContainer)
+		tagTitle.addEventListener('click', (e) => {
+			if (tagNameContainer.contains(e.target as Node)) return;
+			e.stopPropagation();
+			this.handleSelectionClick(e, tagTitle);
 		});
 	}
 
@@ -590,6 +929,7 @@ export class TagExplorerView extends ItemView {
 			// Left click on name opens the file (Ctrl+click opens in new tab)
 			tagNameContainer.addEventListener('click', async (e) => {
 				e.stopPropagation();
+				if (this.handleSelectionClick(e, tagTitle)) return;
 				const tagFile = this.plugin.tagIndex.getTagFile(primaryTag);
 				if (tagFile) {
 					const leaf = e.ctrlKey || e.metaKey 
@@ -614,6 +954,7 @@ export class TagExplorerView extends ItemView {
 				// Left click on tag name opens its file (Ctrl+click opens in new tab)
 				tagSpan.addEventListener('click', async (e) => {
 					e.stopPropagation();
+					if (this.handleSelectionClick(e, tagTitle)) return;
 					const tagFile = this.plugin.tagIndex.getTagFile(tag);
 					if (tagFile) {
 						const leaf = e.ctrlKey || e.metaKey 
@@ -624,6 +965,7 @@ export class TagExplorerView extends ItemView {
 				});
 				// Right click on tag name shows its full context menu
 				tagSpan.addEventListener('contextmenu', (e) => {
+					if (this.handleSelectionContextMenu(e, tagTitle)) return;
 					e.preventDefault();
 					e.stopPropagation();
 					this.showTagContextMenu(e, tag);
@@ -634,6 +976,7 @@ export class TagExplorerView extends ItemView {
 		// Click handler for expand/collapse (clicking anywhere except the name)
 		tagTitle.addEventListener('click', (e) => {
 			e.stopPropagation();
+			if (this.handleSelectionClick(e, tagTitle)) return;
 			// Toggle expansion for this specific tree position
 			this.togglePathExpansion(treePath, !isExpanded);
 			this.refresh();
@@ -641,6 +984,7 @@ export class TagExplorerView extends ItemView {
 
 		// Right click handler - different behavior for single vs combined tags
 		tagTitle.addEventListener('contextmenu', (e) => {
+			if (this.handleSelectionContextMenu(e, tagTitle)) return;
 			e.preventDefault();
 			e.stopPropagation();
 			if (group.tags.length === 1) {
@@ -717,7 +1061,8 @@ export class TagExplorerView extends ItemView {
 		// Click to open file (Ctrl+click opens in new tab)
 		fileTitle.addEventListener('click', async (e) => {
 			e.stopPropagation();
-			const leaf = e.ctrlKey || e.metaKey 
+			if (this.handleSelectionClick(e, fileTitle)) return;
+			const leaf = e.ctrlKey || e.metaKey
 				? this.plugin.app.workspace.getLeaf('tab')
 				: this.plugin.app.workspace.getLeaf();
 			await leaf.openFile(file);
@@ -725,6 +1070,7 @@ export class TagExplorerView extends ItemView {
 
 		// Context menu
 		fileTitle.addEventListener('contextmenu', (e) => {
+			if (this.handleSelectionContextMenu(e, fileTitle)) return;
 			e.preventDefault();
 			this.showFileContextMenu(e, file);
 		});
@@ -1027,7 +1373,7 @@ export class TagExplorerView extends ItemView {
 		menu.addSeparator();
 
 		// Add "New" submenu (new file with tag, child tag, parent tag)
-		addNewSubmenu(this.plugin, menu, tag, () => this.refresh());
+		addNewSubmenu(this.plugin, menu, [tag], () => this.refresh());
 
 		menu.addSeparator();
 
@@ -2459,6 +2805,13 @@ export class TagExplorerView extends ItemView {
 			.taggable-tags-explorer .is-highlighted {
 				background-color: var(--text-selection) !important;
 			}
+			/* Multi-select state */
+			.taggable-tags-explorer .tree-item-self.is-selected {
+				background-color: var(--text-selection);
+			}
+			.taggable-tags-explorer .tree-item-self.is-selected:hover {
+				background-color: var(--text-selection);
+			}
 			/* Untagged group */
 			.taggable-tags-explorer .untagged-label {
 				color: var(--text-muted);
@@ -2726,6 +3079,30 @@ export class TagExplorerView extends ItemView {
 				display: flex;
 				justify-content: flex-end;
 				gap: 8px;
+			}
+			.merge-tags-modal .merge-tags-heading {
+				display: flex;
+				align-items: center;
+				flex-wrap: wrap;
+				gap: 8px;
+				margin-bottom: 12px;
+			}
+			.merge-tags-modal .merge-tags-heading-label {
+				color: var(--text-muted);
+			}
+			.merge-tags-modal .merge-tags-swap-button {
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				padding: 4px;
+				border-radius: 4px;
+			}
+			.merge-tags-modal .merge-tags-swap-button:hover {
+				background-color: var(--background-modifier-hover);
+			}
+			.merge-tags-modal .merge-tags-summary {
+				margin: 0;
+				line-height: 1.5;
 			}
 		`;
 		this.containerEl.appendChild(this.styleEl);
