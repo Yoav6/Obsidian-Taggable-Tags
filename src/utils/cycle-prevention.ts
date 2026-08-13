@@ -412,6 +412,7 @@ export function uniqueNameForSource(
 		folder?: TFolder;
 		existingTagFile?: TFile;
 		nestedTagPath?: string;
+		nestedLevelIndex?: number;
 		matchingNote?: TFile;
 	},
 	originalName: string
@@ -444,9 +445,10 @@ export function uniqueNameForSource(
 	}
 
 	if (source.type === 'nested-tag' && source.nestedTagPath) {
-		const parts = source.nestedTagPath.split('/');
-		if (parts.length >= 2) {
-			const parentLevel = parts[parts.length - 2];
+		const parts = source.nestedTagPath.split('/').filter(Boolean);
+		const levelIndex = source.nestedLevelIndex ?? parts.length - 1;
+		if (levelIndex > 0 && parts.length > levelIndex) {
+			const parentLevel = parts[levelIndex - 1];
 			return joinTagNameSegments([originalName, parentLevel], settings);
 		}
 	}

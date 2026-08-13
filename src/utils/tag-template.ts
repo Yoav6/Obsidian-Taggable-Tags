@@ -202,31 +202,16 @@ export async function addTagPropertiesToFile(
 	const parents = filterSafeParentTags(plugin, tagName, normalizeParentTags(parentTagOrTags));
 	const propName = plugin.settings.tagPropertyName;
 	const exceptionPropName = plugin.settings.exceptionToPropertyName;
-	
-	const content = await plugin.app.vault.read(file);
-	const { frontmatter, body } = parseFrontmatter(content);
-	
-	const requiredProps: Record<string, unknown> = {};
-	requiredProps[propName] = tagName;
-	// Intended parents only — never merge prior tags: entries as hierarchy parents
-	requiredProps['tags'] = [...parents];
-	
-	if (!frontmatter || !(exceptionPropName in frontmatter)) {
-		requiredProps[exceptionPropName] = [];
-	}
-	
-	const mergedFrontmatter: Record<string, unknown> = { ...requiredProps };
-	
-	if (frontmatter) {
-		for (const [key, value] of Object.entries(frontmatter)) {
-			if (!(key in mergedFrontmatter)) {
-				mergedFrontmatter[key] = value;
-			}
+
+	// Obsidian's own frontmatter editor, so properties this plugin knows nothing
+	// about survive untouched. Reading and re-serializing the whole block loses
+	// anything the naive parser can't represent, such as multi-line values.
+	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+		fm[propName] = tagName;
+		// Intended parents only — never merge prior tags: entries as hierarchy parents
+		fm['tags'] = [...parents];
+		if (!(exceptionPropName in fm)) {
+			fm[exceptionPropName] = [];
 		}
-	}
-	
-	const newFrontmatter = serializeFrontmatter(mergedFrontmatter);
-	const newContent = `---\n${newFrontmatter}\n---\n${body}`;
-	
-	await plugin.app.vault.modify(file, newContent);
+	});
 }

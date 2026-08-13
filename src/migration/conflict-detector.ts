@@ -1,8 +1,14 @@
 import { TFile, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import { findMatchingFileInFolder } from '../utils/name-matching';
-import { toComparisonKey } from '../utils/tag-naming';
-import { findMisplacedMatchingNotes, uniqueNameForSource } from '../utils/cycle-prevention';
+import { findMatchingFileInFolder, namesMatch } from '../utils/name-matching';
+import { joinTagNameSegments, toComparisonKey } from '../utils/tag-naming';
+import {
+	findMisplacedMatchingNotes,
+	folderNeedsDisambiguation,
+	isTagAncestorOfFolder,
+	uniqueNameForSource,
+} from '../utils/cycle-prevention';
+import type { VaultModel } from './vault-model';
 
 /**
  * The type of source that would create a tag during migration.
@@ -25,6 +31,8 @@ export interface TagSource {
 	existingTagFile?: TFile;
 	/** For 'nested-tag' type: the full nested tag path (e.g., "media/games") */
 	nestedTagPath?: string;
+	/** For 'nested-tag' type: which level in nestedTagPath this source represents (0-based) */
+	nestedLevelIndex?: number;
 	/** For 'matching-note' type: a deep note whose basename matches an ancestor tag */
 	matchingNote?: TFile;
 }
@@ -39,16 +47,54 @@ export interface NamingConflict {
 	sources: TagSource[];
 }
 
+export type ResolutionKind = 'keep' | 'rename' | 'merge' | 'delete';
+
 /**
  * Represents how a conflict will be resolved.
  */
 export interface ConflictResolution {
 	/** The source being resolved */
 	source: TagSource;
-	/** The new name for this source */
+	/** How this source is resolved */
+	kind: ResolutionKind;
+	/** The new name for this source (rename) */
 	newName: string;
 	/** Whether this source keeps its original name */
 	keepsOriginalName: boolean;
+	/** Merge target when kind is 'merge' */
+	mergeInto?: TagSource;
+	/** When kind is 'rename', whether to add the keeper tag as a parent */
+	keeperIsParent?: boolean;
+}
+
+/** Stable id for a source (for UI and resolution maps) */
+export function sourceId(source: TagSource): string {
+	switch (source.type) {
+		case 'folder':
+			return `folder:${source.folder?.path ?? source.name}`;
+		case 'existing-tag':
+			return `tag:${source.existingTagFile?.path ?? source.name}`;
+		case 'matching-note':
+			return `note:${source.matchingNote?.path ?? source.name}`;
+		case 'nested-tag':
+			return `nested:${source.nestedTagPath ?? source.name}`;
+		default:
+			return `unknown:${source.name}`;
+	}
+}
+
+export function getAvailableResolutionKinds(source: TagSource): ResolutionKind[] {
+	switch (source.type) {
+		case 'folder':
+		case 'existing-tag':
+			return ['keep', 'rename', 'merge', 'delete'];
+		case 'nested-tag':
+			return ['keep', 'rename', 'merge', 'delete'];
+		case 'matching-note':
+			return ['keep', 'rename', 'delete'];
+		default:
+			return ['keep', 'rename'];
+	}
 }
 
 /**
@@ -83,7 +129,7 @@ export function detectNamingConflicts(
 	// Find conflicts (2+ distinct sources for the same tag name)
 	const conflicts: NamingConflict[] = [];
 	for (const [name, sources] of sourcesByName) {
-		const distinctSources = deduplicateSources(sources);
+		const distinctSources = deduplicateSources(plugin, sources);
 		if (distinctSources.length >= 2) {
 			conflicts.push({ name: distinctSources[0]?.name ?? name, sources: distinctSources });
 		}
@@ -252,16 +298,92 @@ function addNestedTagSource(
 	nestedTagPath: string
 ): void {
 	const levels = nestedTagPath.split('/');
-	
-	// Each level of the nested tag becomes a potential tag
-	for (const level of levels) {
-		const normalizedLevel = plugin.tagIndex.normalizeTag(level);
+
+	for (let i = 0; i < levels.length; i++) {
+		const normalizedLevel = plugin.tagIndex.normalizeTag(levels[i]);
 		addSource(sourcesByName, normalizedLevel, {
 			type: 'nested-tag',
 			name: normalizedLevel,
 			nestedTagPath,
+			nestedLevelIndex: i,
 		}, plugin);
 	}
+}
+
+/**
+ * Expected vault folder path for a nested-tag source at its level
+ * (e.g. Beliefs/Beliefs level 1 → "Beliefs/Beliefs" using display segment names).
+ */
+function nestedSourceExpectedFolderPath(
+	plugin: TaggableTagsPlugin,
+	source: TagSource
+): string | null {
+	if (source.type !== 'nested-tag' || !source.nestedTagPath || source.nestedLevelIndex === undefined) {
+		return null;
+	}
+	const parts = source.nestedTagPath
+		.split('/')
+		.slice(0, source.nestedLevelIndex + 1)
+		.map(p => plugin.tagIndex.toDisplayName(plugin.tagIndex.normalizeTag(p)));
+	return parts.join('/');
+}
+
+function vaultPathMatchesExpected(
+	plugin: TaggableTagsPlugin,
+	vaultPath: string,
+	expectedPath: string
+): boolean {
+	const vaultParts = vaultPath.split('/').filter(Boolean);
+	const expectedParts = expectedPath.split('/').filter(Boolean);
+	if (vaultParts.length !== expectedParts.length) return false;
+	return vaultParts.every((part, i) => namesMatch(part, expectedParts[i], plugin));
+}
+
+/** True when a folder or tag note already sits at the path this nested level expects. */
+function nestedSourceCoveredAtExpectedPath(
+	plugin: TaggableTagsPlugin,
+	source: TagSource,
+	folders: TagSource[],
+	existingTags: TagSource[]
+): boolean {
+	const expectedPath = nestedSourceExpectedFolderPath(plugin, source);
+	if (!expectedPath) return false;
+
+	for (const folder of folders) {
+		if (folder.folder && vaultPathMatchesExpected(plugin, folder.folder.path, expectedPath)) {
+			return true;
+		}
+	}
+
+	// Inner nested level covered by parent folder + matching same-name note (e.g. Beliefs/Beliefs.md)
+	const expectedParts = expectedPath.split('/').filter(Boolean);
+	if (expectedParts.length >= 2) {
+		const parentPath = expectedParts.slice(0, -1).join('/');
+		const leafName = expectedParts[expectedParts.length - 1];
+		for (const folder of folders) {
+			if (!folder.folder) continue;
+			if (!vaultPathMatchesExpected(plugin, folder.folder.path, parentPath)) continue;
+			if (folder.matchingFile && namesMatch(folder.matchingFile.basename, leafName, plugin)) {
+				return true;
+			}
+		}
+	}
+
+	for (const tag of existingTags) {
+		if (!tag.existingTagFile?.parent) continue;
+		const parentPath = tag.existingTagFile.parent.isRoot()
+			? ''
+			: tag.existingTagFile.parent.path;
+		const tagPath = parentPath
+			? `${parentPath}/${tag.existingTagFile.basename}`
+			: tag.existingTagFile.basename;
+		if (vaultPathMatchesExpected(plugin, tagPath.replace(/\.md$/, ''), expectedPath)
+			|| vaultPathMatchesExpected(plugin, parentPath, expectedPath)) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /**
@@ -291,7 +413,7 @@ function addSource(
  * - Multiple nested tags with the same leaf name = 1 source (any one of them)
  * - If a folder's matching file IS an existing tag file, they're the same source
  */
-function deduplicateSources(sources: TagSource[]): TagSource[] {
+function deduplicateSources(plugin: TaggableTagsPlugin, sources: TagSource[]): TagSource[] {
 	const folders = sources.filter(s => s.type === 'folder');
 	const existingTags = sources.filter(s => s.type === 'existing-tag');
 	const nestedTags = sources.filter(s => s.type === 'nested-tag');
@@ -353,12 +475,44 @@ function deduplicateSources(sources: TagSource[]): TagSource[] {
 		result.push(note);
 	}
 	
-	// For nested tags, only add one representative if nothing else covers this name
-	if (nestedTags.length > 0 && result.length === 0) {
-		result.push(nestedTags[0]);
+	// Nested-tag: one source per (name, level, parent prefix in nested path).
+	// e.g. #artist/Don_McLean and #artist/Pink_Floyd both register level-0 "artist" once.
+	const seenNestedKeys = new Map<string, TagSource>();
+	for (const nested of nestedTags) {
+		if (nestedSourceCoveredAtExpectedPath(plugin, nested, folders, existingTags)) {
+			continue;
+		}
+		const key = nestedSourceDedupKey(plugin, nested);
+		const existing = seenNestedKeys.get(key);
+		if (!existing || nestedTagPathSortRank(nested) < nestedTagPathSortRank(existing)) {
+			seenNestedKeys.set(key, nested);
+		}
 	}
-	
+	for (const nested of seenNestedKeys.values()) {
+		result.push(nested);
+	}
+
 	return result;
+}
+
+/** Dedup key: same tag level under the same nested parent chain = one flatten target. */
+function nestedSourceDedupKey(plugin: TaggableTagsPlugin, source: TagSource): string {
+	if (source.type !== 'nested-tag' || !source.nestedTagPath || source.nestedLevelIndex === undefined) {
+		return `other:${sourceId(source)}`;
+	}
+	const parts = source.nestedTagPath.split('/').filter(Boolean);
+	const idx = source.nestedLevelIndex;
+	const parentPrefix = parts
+		.slice(0, idx)
+		.map(p => toComparisonKey(plugin.tagIndex.normalizeTag(p), plugin.settings))
+		.join('/');
+	const nameKey = toComparisonKey(source.name, plugin.settings);
+	return `nested:${nameKey}:${idx}:${parentPrefix}`;
+}
+
+function nestedTagPathSortRank(source: TagSource): number {
+	if (source.type !== 'nested-tag' || !source.nestedTagPath) return Number.MAX_SAFE_INTEGER;
+	return source.nestedTagPath.split('/').filter(Boolean).length;
 }
 
 /**
@@ -380,6 +534,9 @@ function getSourceDepth(source: TagSource): number {
 		return parent.path.split('/').filter(Boolean).length;
 	}
 	if (source.type === 'nested-tag' && source.nestedTagPath) {
+		if (source.nestedLevelIndex !== undefined) {
+			return source.nestedLevelIndex + 1;
+		}
 		return source.nestedTagPath.split('/').filter(Boolean).length;
 	}
 	return 999;
@@ -418,18 +575,30 @@ function generateResolutions(
 	});
 	
 	const keeper = sortedSources[0];
-	
+	const usedNewNames = new Set<string>();
+
 	for (const source of sortedSources) {
 		if (source === keeper) {
 			resolutions.push({
 				source,
+				kind: 'keep',
 				newName: conflict.name,
 				keepsOriginalName: true,
 			});
 		} else {
+			let newName = generateUniqueName(plugin, source, conflict.name);
+			if (usedNewNames.has(toComparisonKey(newName, plugin.settings))) {
+				let suffix = 2;
+				while (usedNewNames.has(toComparisonKey(newName, plugin.settings))) {
+					newName = joinTagNameSegments([newName, String(suffix)], plugin.settings);
+					suffix++;
+				}
+			}
+			usedNewNames.add(toComparisonKey(newName, plugin.settings));
 			resolutions.push({
 				source,
-				newName: generateUniqueName(plugin, source, conflict.name),
+				kind: 'rename',
+				newName,
 				keepsOriginalName: false,
 			});
 		}
@@ -486,7 +655,8 @@ export async function applyConflictResolutions(
 		const collisionLeaf = plugin.tagIndex.normalizeTag(conflict.name);
 
 		for (const resolution of conflictResolutions) {
-			if (resolution.keepsOriginalName) continue;
+			if (resolution.kind === 'keep' || resolution.keepsOriginalName) continue;
+			if (resolution.kind === 'merge') continue;
 			
 			const source = resolution.source;
 			const newName = resolution.newName;
@@ -656,7 +826,7 @@ export function countRenames(resolutions: Map<NamingConflict, ConflictResolution
 	let count = 0;
 	for (const conflictResolutions of resolutions.values()) {
 		for (const resolution of conflictResolutions) {
-			if (!resolution.keepsOriginalName) {
+			if (resolution.kind === 'rename') {
 				count++;
 			}
 		}
@@ -680,4 +850,225 @@ export function describeSource(source: TagSource): string {
 		default:
 			return 'Unknown source';
 	}
+}
+
+/**
+ * Detect folders that would be disambiguated at apply-time and surface them as conflicts.
+ */
+export function detectDisambiguationConflicts(plugin: TaggableTagsPlugin): NamingConflict[] {
+	const conflicts: NamingConflict[] = [];
+	const seen = new Set<string>();
+
+	for (const folder of plugin.app.vault.getAllLoadedFiles()) {
+		if (!(folder instanceof TFolder) || folder.isRoot()) continue;
+
+		const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
+		if (!tagName) continue;
+
+		if (folderNeedsDisambiguation(plugin, folder)) {
+			const key = `${toComparisonKey(tagName, plugin.settings)}::${folder.path}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+
+			const peers = plugin.app.vault.getAllLoadedFiles().filter(
+				f => f instanceof TFolder && !f.isRoot()
+					&& plugin.tagIndex.tagsMatch(
+						plugin.tagIndex.getTagFromFolderPath(f.path) ?? '',
+						tagName
+					)
+			) as TFolder[];
+
+			if (peers.length < 2 && !isTagAncestorOfFolder(plugin, tagName, folder)) {
+				continue;
+			}
+
+			const sources: TagSource[] = peers.map(f => ({
+				type: 'folder' as const,
+				name: tagName,
+				folder: f,
+				matchingFile: findMatchingFileInFolder(plugin, f, tagName) ?? undefined,
+			}));
+
+			if (sources.length >= 2) {
+				conflicts.push({ name: tagName, sources });
+			}
+		}
+	}
+
+	return conflicts;
+}
+
+/**
+ * Merge disambiguation conflicts into a detection result, deduping by source paths.
+ */
+export function mergeConflictResults(
+	base: ConflictDetectionResult,
+	extra: NamingConflict[],
+	plugin: TaggableTagsPlugin
+): ConflictDetectionResult {
+	const existingKeys = new Set(
+		base.conflicts.map(c => c.sources.map(sourceId).sort().join('|'))
+	);
+
+	for (const conflict of extra) {
+		const key = conflict.sources.map(sourceId).sort().join('|');
+		if (existingKeys.has(key)) continue;
+		existingKeys.add(key);
+		base.conflicts.push(conflict);
+		base.resolutions.set(conflict, generateResolutions(plugin, conflict));
+	}
+
+	return base;
+}
+
+export interface ResolvedConflictMap {
+	/** sourceId -> resolution */
+	bySourceId: Map<string, ConflictResolution>;
+	/** sourceId -> keeper resolution for the same conflict */
+	keeperBySourceId: Map<string, ConflictResolution>;
+	/** tag comparison key -> canonical tag name after alias/merge */
+	tagAliases: Map<string, string>;
+	/** folder paths excluded from migration (deleted or skipped) */
+	excludedPaths: Set<string>;
+	/** file paths to delete */
+	deletedFilePaths: Set<string>;
+	/** folder path -> extra parent tags from rename-with-parent resolutions */
+	collisionParentsByFolderPath: Map<string, string[]>;
+}
+
+export function sourceSupportsKeeperAsParent(source: TagSource): boolean {
+	return source.type === 'folder' || source.type === 'existing-tag' || source.type === 'nested-tag';
+}
+
+export function buildResolvedConflictMap(
+	resolutions: Map<NamingConflict, ConflictResolution[]>
+): ResolvedConflictMap {
+	const bySourceId = new Map<string, ConflictResolution>();
+	const keeperBySourceId = new Map<string, ConflictResolution>();
+	const tagAliases = new Map<string, string>();
+	const excludedPaths = new Set<string>();
+	const deletedFilePaths = new Set<string>();
+	const collisionParentsByFolderPath = new Map<string, string[]>();
+
+	for (const [, conflictResolutions] of resolutions) {
+		const keeper = conflictResolutions.find(r => r.kind === 'keep' || r.keepsOriginalName);
+		for (const resolution of conflictResolutions) {
+			bySourceId.set(sourceId(resolution.source), resolution);
+			if (keeper) {
+				keeperBySourceId.set(sourceId(resolution.source), keeper);
+			}
+
+			if (resolution.kind === 'merge' && resolution.mergeInto && keeper) {
+				continue;
+			}
+
+			if (resolution.kind === 'delete') {
+				const source = resolution.source;
+				if (source.type === 'folder' && source.folder) {
+					excludedPaths.add(source.folder.path);
+				} else if (source.type === 'existing-tag' && source.existingTagFile) {
+					deletedFilePaths.add(source.existingTagFile.path);
+				} else if (source.type === 'matching-note' && source.matchingNote) {
+					deletedFilePaths.add(source.matchingNote.path);
+				}
+				continue;
+			}
+
+			if (
+				resolution.kind === 'rename' &&
+				resolution.keeperIsParent &&
+				keeper &&
+				!resolution.keepsOriginalName
+			) {
+				const folderPath = resolution.source.folder?.path;
+				if (folderPath) {
+					const existing = collisionParentsByFolderPath.get(folderPath) ?? [];
+					if (!existing.includes(keeper.source.name)) {
+						existing.push(keeper.source.name);
+					}
+					collisionParentsByFolderPath.set(folderPath, existing);
+				}
+			}
+		}
+	}
+
+	return { bySourceId, keeperBySourceId, tagAliases, excludedPaths, deletedFilePaths, collisionParentsByFolderPath };
+}
+
+export function getSourceVaultPath(source: TagSource): string | null {
+	switch (source.type) {
+		case 'folder':
+			return source.folder?.path ?? null;
+		case 'existing-tag':
+			return source.existingTagFile?.path ?? null;
+		case 'matching-note':
+			return source.matchingNote?.path ?? null;
+		case 'nested-tag':
+			return source.nestedTagPath ?? null;
+		default:
+			return null;
+	}
+}
+
+export function getResolvedTagName(
+	plugin: TaggableTagsPlugin,
+	source: TagSource,
+	resolution: ConflictResolution | undefined,
+	conflictName: string
+): string {
+	if (!resolution || resolution.kind === 'keep' || resolution.keepsOriginalName) {
+		return plugin.tagIndex.normalizeTag(conflictName);
+	}
+	if (resolution.kind === 'merge' && resolution.mergeInto) {
+		return plugin.tagIndex.normalizeTag(resolution.mergeInto.name);
+	}
+	if (resolution.kind === 'delete') {
+		return plugin.tagIndex.normalizeTag(conflictName);
+	}
+	return plugin.tagIndex.normalizeTag(resolution.newName || conflictName);
+}
+
+export function parentTagForSource(
+	plugin: TaggableTagsPlugin,
+	source: TagSource
+): string | null {
+	if (source.type === 'folder' && source.folder?.parent && !source.folder.parent.isRoot()) {
+		return plugin.tagIndex.getTagFromFolderPath(source.folder.parent.path);
+	}
+	if (source.type === 'existing-tag' && source.existingTagFile?.parent) {
+		const parent = source.existingTagFile.parent;
+		if (!parent.isRoot()) {
+			return plugin.tagIndex.getTagFromFolderPath(parent.path);
+		}
+	}
+	if (source.type === 'nested-tag' && source.nestedTagPath) {
+		const parts = source.nestedTagPath.split('/');
+		if (parts.length >= 2) {
+			return plugin.tagIndex.normalizeTag(parts[parts.length - 2]);
+		}
+	}
+	return null;
+}
+
+export function compoundNameForParentResolution(
+	plugin: TaggableTagsPlugin,
+	leafName: string,
+	keeperName: string,
+	contextParent: string | null
+): string {
+	return joinTagNameSegments(
+		[leafName, contextParent ?? keeperName],
+		plugin.settings
+	);
+}
+
+/**
+ * Re-run conflict detection after applying resolutions to a vault model.
+ */
+export function revalidateConflicts(
+	plugin: TaggableTagsPlugin,
+	model: VaultModel,
+	flattenNestedTags: boolean
+): ConflictDetectionResult {
+	return detectNamingConflicts(plugin, flattenNestedTags);
 }

@@ -1,41 +1,23 @@
-import { Notice, TFile, TFolder } from 'obsidian';
+import { Notice, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import type { FolderTagBehavior, ExistingFileBehavior } from '../settings';
-import { flattenNestedTags } from './flatten-nested-tags';
-import { 
-	ensureFilesHaveFolderTags, 
-	previewFilesNeedingFolderTags,
-	previewEmptyFolders,
-	isInExcludedFolder,
-	isExcludedFolderPath
-} from '../sync/folder-sync';
-import { 
-	removeRedundantParentTags, 
-	previewRedundantParentTags 
-} from '../utils/tag-ordering';
-import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
-import { findMatchingFileInFolder, findMatchingNonTagFile } from '../utils/name-matching';
-import {
-	disambiguateFolderIfNeeded,
-	collectSafeParentTags,
-	computeLeafTagKeepers,
-	isLeafTagKeeper,
-} from '../utils/cycle-prevention';
-import { createMissingTagFiles } from '../sync/auto-create';
+import type { ExistingFileBehavior } from '../settings';
+import { previewEmptyFolders } from '../sync/folder-sync';
 import { MigrationSettingsModal } from '../ui/migration-settings-modal';
-import { MigrationPreviewModal } from '../ui/migration-preview-modal';
+import { MigrationReviewModal } from '../ui/migration-review-modal';
 import { BackupReminderModal } from '../ui/backup-reminder-modal';
-import { ConflictResolutionModal } from '../ui/conflict-resolution-modal';
 import { EmptyFoldersModal } from '../ui/empty-folders-modal';
 import { MigrationProgressModal, MigrationStep } from '../ui/migration-progress-modal';
-import { 
-	detectNamingConflicts, 
-	hasConflicts, 
-	applyConflictResolutions,
+import {
+	detectNamingConflicts,
+	detectDisambiguationConflicts,
+	mergeConflictResults,
+	hasConflicts,
 	NamingConflict,
 	ConflictResolution,
-	countRenames
 } from '../migration/conflict-detector';
+import { buildMigrationPlan } from '../migration/planner';
+import { executePlan, progressStepForOp, PROGRESS_STEP_IDS } from '../migration/executor';
+import type { MigrationPlan } from '../migration/plan';
 
 /**
  * Settings that the user can configure for migration.
@@ -47,104 +29,99 @@ export interface MigrationSettings {
 	excludedFolders: string[];
 }
 
-/**
- * Recommended defaults for migration settings.
- */
 export const RECOMMENDED_MIGRATION_SETTINGS: MigrationSettings = {
 	removeRedundantParentTags: true,
 	flattenNestedTags: true,
 	enableFolderSyncAfter: false,
-	excludedFolders: [], // Will be populated from current plugin settings
+	excludedFolders: [],
 };
 
-/**
- * Settings that are temporarily forced during migration.
- * These prevent modal spam and race conditions.
- */
 interface ForcedSettings {
 	existingFileBehavior: ExistingFileBehavior;
-	keepOriginalFolderTag: FolderTagBehavior;
+	keepOriginalFolderTag: 'always';
 	autoCreateFiles: boolean;
 	syncFoldersWithTags: boolean;
+	confirmUnusedTagDeletion: boolean;
 }
 
 const FORCED_DURING_MIGRATION: ForcedSettings = {
-	existingFileBehavior: 'auto', // Always use existing files (no modal)
-	keepOriginalFolderTag: 'always', // Always keep original tags (no modal)
-	autoCreateFiles: false, // Don't auto-create to prevent race conditions
-	syncFoldersWithTags: false, // Disable folder sync to prevent event handler interference
+	existingFileBehavior: 'auto',
+	keepOriginalFolderTag: 'always',
+	autoCreateFiles: false,
+	syncFoldersWithTags: false,
+	confirmUnusedTagDeletion: false,
 };
 
 /**
- * Preview of what the migration will do.
- */
-export interface MigrationPreview {
-	conflictsToResolve: number;
-	conflictRenames: Array<{ path: string; fromName: string; toName: string }>;
-	tagFilesToCreate: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }>;
-	tagsToAdd: Array<{ file: TFile; folderTag: string }>;
-	redundantTagsToRemove: Array<{ file: TFile; tags: string[] }>;
-	nestedTagsToFlatten: Array<{ tag: string; levels: string[] }>;
-	emptyFolders: TFolder[];
-}
-
-/**
  * Main entry point for the migrate vault command.
- * Runs a multi-step wizard: backup reminder -> settings -> conflict detection -> preview -> apply -> empty folders.
  */
 export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
-	// Step 1: Show backup reminder
 	const backupModal = new BackupReminderModal(plugin);
 	const proceedAfterBackup = await backupModal.prompt();
-	
-	if (!proceedAfterBackup) {
-		return; // User cancelled
-	}
-	
-	// Step 2: Show settings configuration
+	if (!proceedAfterBackup) return;
+
 	const settingsModal = new MigrationSettingsModal(plugin);
 	const migrationSettings = await settingsModal.prompt();
-	
-	if (!migrationSettings) {
-		return; // User cancelled
-	}
-	
-	// Step 3: Detect naming conflicts
+	if (!migrationSettings) return;
+
+	let plan: MigrationPlan | null = null;
+	let reviewModal: MigrationReviewModal | null = null;
+
 	new Notice('Detecting naming conflicts...');
-	const conflictResult = detectNamingConflicts(plugin, migrationSettings.flattenNestedTags);
-	
-	let resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null = null;
-	
-	if (hasConflicts(conflictResult)) {
-		// Show conflict resolution modal
-		const conflictModal = new ConflictResolutionModal(plugin, conflictResult);
-		resolvedConflicts = await conflictModal.prompt();
-		
-		if (!resolvedConflicts) {
-			return; // User cancelled
+	let conflictResult = detectNamingConflicts(plugin, migrationSettings.flattenNestedTags);
+	const disambiguation = detectDisambiguationConflicts(plugin);
+	conflictResult = mergeConflictResults(conflictResult, disambiguation, plugin);
+
+	// Conflicts <-> preview loop (single modal, multiple pages)
+	while (true) {
+		let resolvedConflicts: Map<NamingConflict, ConflictResolution[]>;
+
+		if (hasConflicts(conflictResult)) {
+			if (!reviewModal) {
+				reviewModal = new MigrationReviewModal(plugin, migrationSettings, conflictResult);
+			}
+			const resolutions = await reviewModal.waitForConflictsContinue();
+			if (!resolutions) {
+				reviewModal.closeReview();
+				return;
+			}
+			resolvedConflicts = resolutions;
+		} else {
+			if (!reviewModal) {
+				reviewModal = new MigrationReviewModal(plugin, migrationSettings);
+				reviewModal.showGenerating();
+				reviewModal.open();
+			}
+			resolvedConflicts = conflictResult.resolutions;
 		}
+
+		const previewResult = await reviewModal.buildAndShowPreview(() =>
+			buildMigrationPlan(plugin, {
+				settings: migrationSettings,
+				resolvedConflicts,
+			})
+		);
+
+		if (previewResult === 'apply') {
+			plan = reviewModal.getPlan();
+			break;
+		}
+		if (previewResult === 'cancel') {
+			reviewModal.closeReview();
+			return;
+		}
+		// 'back' — return to conflicts page in the same modal (resolutions preserved)
 	}
-	
-	// Step 4: Generate and show preview
-	new Notice('Generating migration preview...');
-	const preview = await generateMigrationPreview(plugin, migrationSettings, resolvedConflicts);
-	
-	const previewModal = new MigrationPreviewModal(plugin, preview, migrationSettings);
-	const shouldApply = await previewModal.prompt();
-	
-	if (!shouldApply) {
-		return; // User cancelled
-	}
-	
-	// Step 5: Apply migration with progress modal
-	// Migration always completes - errors are tracked and shown, but it never stops halfway
-	const emptyFolders = await applyMigration(plugin, migrationSettings, resolvedConflicts);
-	
-	// Step 6: Show empty folders modal if there are any
+
+	reviewModal?.closeReview();
+
+	if (!plan) return;
+
+	const emptyFolders = await applyMigration(plugin, migrationSettings, plan);
+
 	if (emptyFolders.length > 0) {
 		const emptyFoldersModal = new EmptyFoldersModal(plugin, emptyFolders);
 		const result = await emptyFoldersModal.prompt();
-		
 		if (result) {
 			const parts: string[] = [];
 			if (result.foldersDeleted > 0) parts.push(`${result.foldersDeleted} folders deleted`);
@@ -156,85 +133,11 @@ export async function migrateVault(plugin: TaggableTagsPlugin): Promise<void> {
 	}
 }
 
-/**
- * Generate a preview of what the migration will do.
- */
-export async function generateMigrationPreview(
-	plugin: TaggableTagsPlugin,
-	settings: MigrationSettings,
-	resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null
-): Promise<MigrationPreview> {
-	const conflictRenames: Array<{ path: string; fromName: string; toName: string }> = [];
-	if (resolvedConflicts) {
-		for (const resolutions of resolvedConflicts.values()) {
-			for (const resolution of resolutions) {
-				if (resolution.keepsOriginalName) continue;
-				const source = resolution.source;
-				const path =
-					source.folder?.path ||
-					source.existingTagFile?.path ||
-					source.matchingNote?.path ||
-					source.nestedTagPath ||
-					'unknown';
-				conflictRenames.push({
-					path,
-					fromName: source.name,
-					toName: resolution.newName,
-				});
-			}
-		}
-	}
-
-	const preview: MigrationPreview = {
-		conflictsToResolve: conflictRenames.length,
-		conflictRenames,
-		tagFilesToCreate: [],
-		tagsToAdd: [],
-		redundantTagsToRemove: [],
-		nestedTagsToFlatten: [],
-		emptyFolders: [],
-	};
-	
-	// Preview nested tags to flatten (must happen first)
-	if (settings.flattenNestedTags) {
-		preview.nestedTagsToFlatten = findNestedTagsToFlatten(plugin);
-	}
-	
-	// Preview tag files to create, first for folders and then for the tags no folder covers
-	const folderTagFiles = previewTagFilesForFolders(plugin, settings.excludedFolders);
-	preview.tagFilesToCreate = [
-		...folderTagFiles,
-		...previewTagFilesForRemainingTags(plugin, folderTagFiles),
-	];
-	
-	// Preview files that need folder tags
-	const filesNeedingTags = previewFilesNeedingFolderTags(plugin);
-	preview.tagsToAdd = filesNeedingTags;
-	
-	// Preview redundant tags to remove (after considering what would be added)
-	if (settings.removeRedundantParentTags) {
-		preview.redundantTagsToRemove = previewAllRedundantTags(plugin);
-	}
-	
-	// Preview empty folders (will be shown in post-migration modal)
-	preview.emptyFolders = previewEmptyFolders(plugin);
-	
-	return preview;
-}
-
-/**
- * Apply the migration with the given settings.
- * Returns the list of empty folders for post-migration handling.
- * 
- * IMPORTANT: This function continues even if individual operations fail.
- * Errors are collected and reported at the end, but migration never stops halfway.
- */
 async function applyMigration(
 	plugin: TaggableTagsPlugin,
 	settings: MigrationSettings,
-	resolvedConflicts: Map<NamingConflict, ConflictResolution[]> | null
+	plan: MigrationPlan
 ): Promise<TFolder[]> {
-	// Define migration steps
 	const steps: MigrationStep[] = [
 		{ id: 'conflicts', name: 'Resolving naming conflicts', status: 'pending' },
 		{ id: 'flatten', name: 'Flattening nested tags', status: 'pending' },
@@ -244,13 +147,10 @@ async function applyMigration(
 		{ id: 'remaining-tags', name: 'Creating tag files for remaining tags', status: 'pending' },
 		{ id: 'rebuild', name: 'Rebuilding tag index', status: 'pending' },
 	];
-	
-	// Open progress modal
+
 	const progressModal = new MigrationProgressModal(plugin, steps);
-	// Don't await - we want to run migration while modal is open
 	const progressPromise = progressModal.start();
-	
-	// Save original settings
+
 	const originalSettings = {
 		existingFileBehavior: plugin.settings.existingFileBehavior,
 		keepOriginalFolderTag: plugin.settings.keepOriginalFolderTag,
@@ -258,589 +158,98 @@ async function applyMigration(
 		removeRedundantParentTags: plugin.settings.removeRedundantParentTags,
 		emptyFolderBehavior: plugin.settings.emptyFolderBehavior,
 		syncFoldersWithTags: plugin.settings.syncFoldersWithTags,
+		confirmUnusedTagDeletion: plugin.settings.confirmUnusedTagDeletion,
 	};
-	
-	// Apply forced settings during migration
+
 	plugin.settings.existingFileBehavior = FORCED_DURING_MIGRATION.existingFileBehavior;
 	plugin.settings.keepOriginalFolderTag = FORCED_DURING_MIGRATION.keepOriginalFolderTag;
 	plugin.settings.autoCreateFiles = FORCED_DURING_MIGRATION.autoCreateFiles;
 	plugin.settings.syncFoldersWithTags = FORCED_DURING_MIGRATION.syncFoldersWithTags;
+	plugin.settings.confirmUnusedTagDeletion = FORCED_DURING_MIGRATION.confirmUnusedTagDeletion;
 	plugin.settings.removeRedundantParentTags = settings.removeRedundantParentTags;
-	plugin.settings.emptyFolderBehavior = 'nothing'; // Handle in post-migration modal
-	
-	let emptyFolders: TFolder[] = [];
-	
-	// Step 1: Apply conflict resolutions (renames)
-	let conflictErrors = 0;
-	const collisionParentsByFolderPath = new Map<string, string[]>();
-	if (resolvedConflicts && countRenames(resolvedConflicts) > 0) {
-		progressModal.startStep('conflicts');
-		const result = await applyConflictResolutionsSafe(plugin, resolvedConflicts, progressModal);
-		conflictErrors = result.errors;
-		for (const [path, parents] of result.collisionParentsByFolderPath) {
-			collisionParentsByFolderPath.set(path, parents);
-		}
-		progressModal.completeStep('conflicts', conflictErrors > 0);
-	} else {
-		progressModal.skipStep('conflicts');
-	}
-	
-	// Step 2: Flatten nested tags FIRST
-	let flattenErrors = 0;
-	if (settings.flattenNestedTags) {
-		progressModal.startStep('flatten');
-		flattenErrors = await flattenNestedTagsSafe(plugin, progressModal);
-		progressModal.completeStep('flatten', flattenErrors > 0);
-	} else {
-		progressModal.skipStep('flatten');
-	}
-	
-	// Step 3: Create tag files for all folders
-	progressModal.startStep('tag-files');
-	const tagFileResult = await createTagFilesForAllFoldersSafe(
-		plugin,
-		settings.excludedFolders,
-		progressModal,
-		collisionParentsByFolderPath
-	);
-	progressModal.completeStep('tag-files', tagFileResult.errors > 0);
-	
-	// Step 4: Ensure files have folder tags
-	progressModal.startStep('folder-tags');
-	const folderTagResult = await ensureFilesHaveFolderTagsSafe(plugin, progressModal);
-	progressModal.completeStep('folder-tags', folderTagResult.errors > 0);
-	
-	// Step 5: Remove redundant tags (parent tags and self-tags) AFTER flattening
-	let redundantErrors = 0;
-	if (settings.removeRedundantParentTags) {
-		progressModal.startStep('redundant');
-		redundantErrors = await removeAllRedundantTagsSafe(plugin, progressModal);
-		progressModal.completeStep('redundant', redundantErrors > 0);
-	} else {
-		progressModal.skipStep('redundant');
-	}
-	
-	// Step 6: The passes above are keyed on folders and on nested paths, so a plain tag
-	// used only inside notes still has no tag file at this point. Auto-create normally
-	// covers those but is force-disabled during migration, so run it once here.
-	progressModal.startStep('remaining-tags');
-	try {
-		await createMissingTagFiles(plugin);
-		progressModal.completeStep('remaining-tags');
-	} catch (error) {
-		progressModal.addError('remaining-tags', `Failed to create tag files: ${String(error)}`);
-		progressModal.completeStep('remaining-tags', true);
+	plugin.settings.emptyFolderBehavior = 'nothing';
+
+	const usedSteps = new Set(plan.ops.map(progressStepForOp));
+	usedSteps.add('rebuild');
+	for (const stepId of PROGRESS_STEP_IDS) {
+		if (!usedSteps.has(stepId)) progressModal.skipStep(stepId);
 	}
 
-	// Step 7: Rebuild index (this should always work)
-	progressModal.startStep('rebuild');
-	try {
-		await plugin.tagIndex.rebuild();
-		await plugin.updateTagRegistry();
-		progressModal.completeStep('rebuild');
-	} catch (error) {
-		progressModal.addError('rebuild', 'Failed to rebuild tag index: ' + String(error));
-		progressModal.completeStep('rebuild', true);
+	const result = await executePlan(plugin, plan, {
+		onStepStart: stepId => progressModal.startStep(stepId),
+		onStepComplete: (stepId, hadErrors) => progressModal.completeStep(stepId, hadErrors),
+	});
+
+	for (const error of result.errors) {
+		progressModal.addError(error.step, error.message, error.file);
 	}
-	
-	// Optionally enable folder sync going forward
+
 	if (settings.enableFolderSyncAfter) {
 		plugin.settings.syncFoldersWithTags = true;
 	}
-	
-	// Get empty folders for post-migration modal
-	emptyFolders = previewEmptyFolders(plugin);
-	
-	// Restore original settings
+
+	const emptyFolders = plan.emptyFolders
+		.map(p => plugin.app.vault.getAbstractFileByPath(p))
+		.filter((f): f is TFolder => f instanceof TFolder);
+
 	plugin.settings.existingFileBehavior = originalSettings.existingFileBehavior;
 	plugin.settings.keepOriginalFolderTag = originalSettings.keepOriginalFolderTag;
 	plugin.settings.autoCreateFiles = originalSettings.autoCreateFiles;
 	plugin.settings.emptyFolderBehavior = originalSettings.emptyFolderBehavior;
-	// Restore syncFoldersWithTags unless user chose to enable it after migration
+	plugin.settings.confirmUnusedTagDeletion = originalSettings.confirmUnusedTagDeletion;
 	if (!settings.enableFolderSyncAfter) {
 		plugin.settings.syncFoldersWithTags = originalSettings.syncFoldersWithTags;
 	}
-	
 	await plugin.saveSettings();
-	
-	// Create error report note if there were errors
+
 	let errorNotePath: string | undefined;
 	if (progressModal.hasErrors()) {
 		errorNotePath = await createMigrationErrorNote(plugin, progressModal.getErrors());
 	}
-	
-	// Mark migration as complete
+
 	progressModal.setComplete(errorNotePath);
-	
-	// Wait for user to click Continue in progress modal
 	await progressPromise;
-	
-	return emptyFolders;
+
+	return emptyFolders.length > 0 ? emptyFolders : previewEmptyFolders(plugin);
 }
 
-/**
- * Create a note with all migration errors.
- */
 async function createMigrationErrorNote(
 	plugin: TaggableTagsPlugin,
 	errors: Array<{ step: string; message: string; file?: string }>
 ): Promise<string> {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 	const notePath = `Migration Errors ${timestamp}.md`;
-	
-	// Group errors by step
+
 	const errorsByStep = new Map<string, Array<{ message: string; file?: string }>>();
 	for (const error of errors) {
-		if (!errorsByStep.has(error.step)) {
-			errorsByStep.set(error.step, []);
-		}
+		if (!errorsByStep.has(error.step)) errorsByStep.set(error.step, []);
 		errorsByStep.get(error.step)!.push({ message: error.message, file: error.file });
 	}
-	
-	// Step ID to human-readable name
+
 	const stepNames: Record<string, string> = {
-		'conflicts': 'Resolving naming conflicts',
-		'flatten': 'Flattening nested tags',
+		conflicts: 'Resolving naming conflicts',
+		flatten: 'Flattening nested tags',
 		'tag-files': 'Creating tag files for folders',
 		'folder-tags': 'Adding folder tags to files',
-		'redundant': 'Removing redundant parent tags',
+		redundant: 'Removing redundant tags',
 		'remaining-tags': 'Creating tag files for remaining tags',
-		'rebuild': 'Rebuilding tag index',
+		rebuild: 'Rebuilding tag index',
 	};
-	
-	// Build the note content
+
 	let content = `# Migration Errors\n\n`;
 	content += `Migration completed on ${new Date().toLocaleString()} with ${errors.length} error${errors.length === 1 ? '' : 's'}.\n\n`;
-	content += `Review each error below and fix manually if needed. Delete this note when done.\n\n`;
 	content += `---\n\n`;
-	
+
 	for (const [step, stepErrors] of errorsByStep) {
-		const stepName = stepNames[step] || step;
-		content += `## ${stepName}\n\n`;
-		
+		content += `## ${stepNames[step] || step}\n\n`;
 		for (const error of stepErrors) {
-			if (error.file) {
-				content += `- **${error.file}**: ${error.message}\n`;
-			} else {
-				content += `- ${error.message}\n`;
-			}
+			content += error.file
+				? `- **${error.file}**: ${error.message}\n`
+				: `- ${error.message}\n`;
 		}
 		content += `\n`;
 	}
-	
+
 	await plugin.app.vault.create(notePath, content);
 	return notePath;
-}
-
-/**
- * Apply conflict resolutions with error handling for each operation.
- */
-async function applyConflictResolutionsSafe(
-	plugin: TaggableTagsPlugin,
-	resolutions: Map<NamingConflict, ConflictResolution[]>,
-	progressModal: MigrationProgressModal
-): Promise<{ renamed: number; errors: number; collisionParentsByFolderPath: Map<string, string[]> }> {
-	let renamed = 0;
-	let errors = 0;
-	const collisionParentsByFolderPath = new Map<string, string[]>();
-	
-	for (const [conflict, conflictResolutions] of resolutions) {
-		for (const resolution of conflictResolutions) {
-			if (resolution.keepsOriginalName) continue;
-			
-			try {
-				const result = await applyConflictResolutions(plugin, new Map([[conflict, [resolution]]]));
-				renamed += result.renamedCount;
-				for (const [path, parents] of result.collisionParentsByFolderPath) {
-					const existing = collisionParentsByFolderPath.get(path) ?? [];
-					for (const p of parents) {
-						if (!existing.some(e => plugin.tagIndex.tagsMatch(e, p))) {
-							existing.push(p);
-						}
-					}
-					collisionParentsByFolderPath.set(path, existing);
-				}
-			} catch (error) {
-				errors++;
-				const source = resolution.source;
-				const path = source.folder?.path || source.existingTagFile?.path || source.matchingNote?.path || 'unknown';
-				progressModal.addError('conflicts', `Failed to rename: ${String(error)}`, path);
-			}
-		}
-	}
-	
-	return { renamed, errors, collisionParentsByFolderPath };
-}
-
-/**
- * Flatten nested tags with error handling.
- */
-async function flattenNestedTagsSafe(
-	plugin: TaggableTagsPlugin,
-	progressModal: MigrationProgressModal
-): Promise<number> {
-	try {
-		await flattenNestedTags(plugin);
-		return 0;
-	} catch (error) {
-		progressModal.addError('flatten', `Failed to flatten nested tags: ${String(error)}`);
-		return 1;
-	}
-}
-
-/**
- * Create tag files for all folders with error handling for each folder.
- */
-async function createTagFilesForAllFoldersSafe(
-	plugin: TaggableTagsPlugin,
-	excludedFolders: string[],
-	progressModal: MigrationProgressModal,
-	collisionParentsByFolderPath: Map<string, string[]> = new Map()
-): Promise<{ created: number; errors: number }> {
-	let created = 0;
-	let errors = 0;
-	const root = plugin.app.vault.getRoot();
-	// Settle every keeper before the walk starts, so renaming one folder can't change
-	// the answer for another and the result doesn't depend on traversal order.
-	const keepers = computeLeafTagKeepers(plugin);
-	
-	async function processFolder(folder: TFolder): Promise<void> {
-		if (folder.isRoot()) {
-			for (const child of folder.children) {
-				if (child instanceof TFolder) {
-					await processFolder(child);
-				}
-			}
-			return;
-		}
-		
-		const isExcluded = excludedFolders.some(ef => 
-			folder.path === ef || folder.path.startsWith(ef + '/')
-		);
-		if (isExcluded) return;
-
-		let currentFolder = folder;
-		let collisionParents = collisionParentsByFolderPath.get(folder.path) ?? [];
-		
-		try {
-			const disambiguated = await disambiguateFolderIfNeeded(plugin, currentFolder, keepers);
-			if (disambiguated.failed) {
-				errors++;
-				progressModal.addError(
-					'tag-files',
-					'Failed to rename folder to avoid naming conflict',
-					currentFolder.path
-				);
-			} else {
-				currentFolder = disambiguated.folder;
-				if (disambiguated.collisionParents.length > 0) {
-					collisionParents = [
-						...collisionParents,
-						...disambiguated.collisionParents.filter(
-							p => !collisionParents.some(e => plugin.tagIndex.tagsMatch(e, p))
-						),
-					];
-					collisionParentsByFolderPath.set(currentFolder.path, collisionParents);
-				}
-			}
-
-			const tagName = plugin.tagIndex.getTagFromFolderPath(currentFolder.path);
-			if (tagName) {
-				const parentFolder = currentFolder.parent;
-				const parentTag = parentFolder && !parentFolder.isRoot()
-					? plugin.tagIndex.getTagFromFolderPath(parentFolder.path)
-					: null;
-
-				const mapParents = collisionParentsByFolderPath.get(currentFolder.path) ?? collisionParents;
-				const safeParents = collectSafeParentTags(plugin, tagName, parentTag, mapParents);
-
-				const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-				const ownedByThisFolder = existingTagFile?.parent?.path === currentFolder.path;
-				// A tag note sitting in some other folder doesn't settle anything: if this
-				// folder is the planned keeper, the note belongs here. The other folder is
-				// disambiguated to its own name, so this doesn't produce two notes.
-				const shouldCreate =
-					!ownedByThisFolder &&
-					(!existingTagFile || isLeafTagKeeper(plugin, currentFolder, keepers));
-
-				if (shouldCreate) {
-					const matchingFile = findMatchingFileInFolder(plugin, currentFolder, currentFolder.name);
-					if (matchingFile) {
-						await addTagPropertiesToFile(plugin, matchingFile, tagName, safeParents);
-						plugin.tagIndex.onTagFileCreated(matchingFile, tagName);
-						created++;
-					} else {
-						const displayName = plugin.tagIndex.toDisplayName(tagName);
-						const filePath = `${currentFolder.path}/${displayName}.md`;
-						
-						const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
-						if (existingFileAtPath) {
-							if (existingFileAtPath instanceof TFile && existingFileAtPath.extension === 'md') {
-								await addTagPropertiesToFile(plugin, existingFileAtPath, tagName, safeParents);
-								plugin.tagIndex.onTagFileCreated(existingFileAtPath, tagName);
-								created++;
-							}
-						} else {
-							const content = await generateTagFileContent(plugin, tagName, safeParents);
-							const file = await plugin.app.vault.create(filePath, content);
-							plugin.tagIndex.onTagFileCreated(file, tagName);
-							created++;
-						}
-					}
-				}
-			}
-		} catch (error) {
-			const errorMsg = String(error);
-			if (!errorMsg.includes('File already exists')) {
-				errors++;
-				progressModal.addError('tag-files', `Failed to create tag file: ${errorMsg}`, currentFolder.path);
-			}
-		}
-		
-		for (const child of currentFolder.children) {
-			if (child instanceof TFolder) {
-				await processFolder(child);
-			}
-		}
-	}
-	
-	await processFolder(root);
-	return { created, errors };
-}
-
-/**
- * Ensure files have folder tags with error handling for each file.
- */
-async function ensureFilesHaveFolderTagsSafe(
-	plugin: TaggableTagsPlugin,
-	progressModal: MigrationProgressModal
-): Promise<{ tagsAdded: number; errors: number }> {
-	let tagsAdded = 0;
-	let errors = 0;
-	
-	try {
-		const result = await ensureFilesHaveFolderTags(plugin);
-		tagsAdded = result.tagsAdded;
-	} catch (error) {
-		errors++;
-		progressModal.addError('folder-tags', `Failed to add folder tags: ${String(error)}`);
-	}
-	
-	return { tagsAdded, errors };
-}
-
-/**
- * Remove all redundant tags: parent tags from regular files and self-tags from tag files.
- */
-async function removeAllRedundantTagsSafe(
-	plugin: TaggableTagsPlugin,
-	progressModal: MigrationProgressModal
-): Promise<number> {
-	let errors = 0;
-	const files = plugin.app.vault.getMarkdownFiles();
-	
-	for (const file of files) {
-		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
-		if (isInExcludedFolder(plugin, file)) continue;
-		
-		try {
-			if (plugin.tagIndex.isTagFile(file)) {
-				// For tag files: remove self-tags
-				await removeSelfTagFromFile(plugin, file);
-			} else {
-				// For regular files: remove redundant parent tags
-				await removeRedundantParentTags(plugin, file);
-			}
-		} catch (error) {
-			errors++;
-			progressModal.addError('redundant', `Failed to remove redundant tags: ${String(error)}`, file.path);
-		}
-	}
-	
-	return errors;
-}
-
-/**
- * Remove self-tag from a tag file (e.g., remove #music from music.md).
- */
-async function removeSelfTagFromFile(plugin: TaggableTagsPlugin, file: TFile): Promise<void> {
-	const tagName = plugin.tagIndex.fileToTagName(file);
-	if (!tagName) return;
-	
-	const cache = plugin.app.metadataCache.getFileCache(file);
-	if (!cache?.frontmatter?.tags) return;
-	
-	const tags = cache.frontmatter.tags;
-	if (!Array.isArray(tags)) return;
-	
-	// Check if the file is tagged with its own tag
-	const hasSelfTag = tags.some((t: unknown) => {
-		if (typeof t !== 'string') return false;
-		return plugin.tagIndex.tagsMatch(t, tagName);
-	});
-	
-	if (hasSelfTag) {
-		// Remove the self-tag
-		await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-			if (Array.isArray(fm.tags)) {
-				fm.tags = fm.tags.filter((t: unknown) => {
-					if (typeof t !== 'string') return true;
-					return !plugin.tagIndex.tagsMatch(t, tagName);
-				});
-			}
-		});
-	}
-}
-
-/**
- * Find all nested tags that would be flattened.
- */
-function findNestedTagsToFlatten(plugin: TaggableTagsPlugin): Array<{ tag: string; levels: string[] }> {
-	const result: Array<{ tag: string; levels: string[] }> = [];
-	const files = plugin.app.vault.getMarkdownFiles();
-	const seenTags = new Set<string>();
-	
-	for (const file of files) {
-		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
-		
-		const cache = plugin.app.metadataCache.getFileCache(file);
-		if (!cache) continue;
-		
-		// Check frontmatter tags
-		if (cache.frontmatter?.tags) {
-			const fmTags = cache.frontmatter.tags;
-			if (Array.isArray(fmTags)) {
-				for (const tag of fmTags) {
-					if (typeof tag === 'string' && tag.includes('/') && !seenTags.has(tag)) {
-						seenTags.add(tag);
-						result.push({ tag, levels: tag.split('/') });
-					}
-				}
-			}
-		}
-		
-		// Check inline tags
-		if (cache.tags) {
-			for (const tagCache of cache.tags) {
-				let tagName = tagCache.tag.startsWith('#') ? tagCache.tag.slice(1) : tagCache.tag;
-				if (tagName.includes('/') && !seenTags.has(tagName)) {
-					seenTags.add(tagName);
-					result.push({ tag: tagName, levels: tagName.split('/') });
-				}
-			}
-		}
-	}
-	
-	return result;
-}
-
-/**
- * Preview which tag files would be created for folders.
- */
-function previewTagFilesForFolders(
-	plugin: TaggableTagsPlugin,
-	excludedFolders: string[]
-): Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> {
-	const result: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> = [];
-	const root = plugin.app.vault.getRoot();
-	
-	function processFolder(folder: TFolder): void {
-		// Skip root and excluded folders
-		if (folder.isRoot()) {
-			for (const child of folder.children) {
-				if (child instanceof TFolder) {
-					processFolder(child);
-				}
-			}
-			return;
-		}
-		
-		if (isExcludedFolderPath(plugin, folder.path)) {
-			return;
-		}
-		
-		// Check if this folder needs a tag file
-		const tagName = plugin.tagIndex.getTagFromFolderPath(folder.path);
-		if (tagName) {
-			const existingTagFile = plugin.tagIndex.getTagFile(tagName);
-			if (!existingTagFile) {
-				// Check for existing file with matching name
-				const matchingFile = findMatchingFileInFolder(plugin, folder, tagName);
-				const parentFolder = folder.parent;
-				const parentTag = parentFolder && !parentFolder.isRoot() 
-					? plugin.tagIndex.getTagFromFolderPath(parentFolder.path) 
-					: null;
-				
-				result.push({
-					tagName,
-					fromExisting: matchingFile,
-					parentTag,
-				});
-			}
-		}
-		
-		// Process children
-		for (const child of folder.children) {
-			if (child instanceof TFolder) {
-				processFolder(child);
-			}
-		}
-	}
-	
-	processFolder(root);
-	return result;
-}
-
-/**
- * Preview tag files that will be created for tags no folder accounts for.
- * Mirrors `createMissingTagFiles`, which lands these at the vault root.
- *
- * Nested tags never appear here: the index skips any tag containing '/', so paths
- * still awaiting flattening are covered by the flatten section of the preview instead.
- */
-function previewTagFilesForRemainingTags(
-	plugin: TaggableTagsPlugin,
-	coveredByFolders: Array<{ tagName: string }>
-): Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> {
-	const result: Array<{ tagName: string; fromExisting: TFile | null; parentTag: string | null }> = [];
-
-	for (const tagName of plugin.tagIndex.getTagsWithoutFiles()) {
-		if (coveredByFolders.some(c => plugin.tagIndex.tagsMatch(c.tagName, tagName))) {
-			continue;
-		}
-
-		result.push({
-			tagName,
-			// Migration forces existingFileBehavior to 'auto', so createTagFile adopts
-			// a matching root-level note rather than creating a new one.
-			fromExisting: findMatchingNonTagFile(plugin, tagName, {
-				onlyUnder: plugin.app.vault.getRoot(),
-				directChildOnly: true,
-			}),
-			parentTag: null,
-		});
-	}
-
-	return result;
-}
-
-/**
- * Preview all redundant parent tags across the vault.
- */
-function previewAllRedundantTags(plugin: TaggableTagsPlugin): Array<{ file: TFile; tags: string[] }> {
-	const result: Array<{ file: TFile; tags: string[] }> = [];
-	const files = plugin.app.vault.getMarkdownFiles();
-	
-	for (const file of files) {
-		if (plugin.tagIndex.isTagFile(file)) continue;
-		if (plugin.tagIndex.isTagRegistryNote(file)) continue;
-		if (isInExcludedFolder(plugin, file)) continue;
-		
-		const redundantTags = previewRedundantParentTags(plugin, file);
-		if (redundantTags.length > 0) {
-			result.push({ file, tags: redundantTags });
-		}
-	}
-	
-	return result;
 }

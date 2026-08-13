@@ -1,28 +1,35 @@
 import { Modal, Setting } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
-import { MigrationPreview, MigrationSettings } from '../commands/migrate-vault';
+import { MigrationSettings } from '../commands/migrate-vault';
+import {
+	describeOp,
+	groupOpsByKind,
+	kindLabel,
+	planSummary,
+	serializePlanToNote,
+	type MigrationPlan,
+} from '../migration/plan';
+
+export type PreviewModalResult = 'apply' | 'back' | 'cancel';
 
 /**
- * Modal that shows a preview of migration changes and lets the user confirm.
+ * Modal that shows a migration plan and lets the user confirm or go back to conflicts.
  */
 export class MigrationPreviewModal extends Modal {
 	private plugin: TaggableTagsPlugin;
-	private preview: MigrationPreview;
+	private plan: MigrationPlan;
 	private settings: MigrationSettings;
-	private resolvePromise: ((value: boolean) => void) | null = null;
+	private resolvePromise: ((value: PreviewModalResult) => void) | null = null;
 	private userMadeChoice = false;
 
-	constructor(plugin: TaggableTagsPlugin, preview: MigrationPreview, settings: MigrationSettings) {
+	constructor(plugin: TaggableTagsPlugin, plan: MigrationPlan, settings: MigrationSettings) {
 		super(plugin.app);
 		this.plugin = plugin;
-		this.preview = preview;
+		this.plan = plan;
 		this.settings = settings;
 	}
 
-	/**
-	 * Show the modal and return a promise that resolves to true if user wants to apply.
-	 */
-	prompt(): Promise<boolean> {
+	prompt(): Promise<PreviewModalResult> {
 		return new Promise((resolve) => {
 			this.resolvePromise = resolve;
 			this.userMadeChoice = false;
@@ -37,139 +44,69 @@ export class MigrationPreviewModal extends Modal {
 
 		contentEl.createEl('h2', { text: 'Migration preview' });
 
-		// Summary
-		const summary = this.getSummary();
-		if (summary.totalChanges === 0) {
+		const summary = planSummary(this.plan);
+		if (summary.total === 0) {
 			contentEl.createEl('p', {
 				text: 'No changes needed. Your vault is already organized according to the selected settings.',
 				cls: 'taggable-tags-no-changes',
 			});
 		} else {
 			contentEl.createEl('p', {
-				text: `The migration will make ${summary.totalChanges} change${summary.totalChanges === 1 ? '' : 's'} to your vault:`,
+				text: `The migration will make ${summary.total} change${summary.total === 1 ? '' : 's'} to your vault:`,
 				cls: 'taggable-tags-summary',
 			});
 		}
 
-		// Create scrollable container for changes
 		const changesContainer = contentEl.createDiv({ cls: 'taggable-tags-changes-container' });
+		const groups = groupOpsByKind(this.plan);
 
-		// Nested tags to flatten
-		if (this.preview.nestedTagsToFlatten.length > 0) {
+		for (const [kind, ops] of groups) {
 			this.renderSection(
 				changesContainer,
-				`Nested tags to flatten (${this.preview.nestedTagsToFlatten.length})`,
-				this.preview.nestedTagsToFlatten.map((item) => ({
-					primary: `#${item.tag}`,
-					secondary: `→ ${item.levels.map((l) => '#' + l).join(' → ')}`,
+				`${kindLabel(kind)} (${ops.length})`,
+				ops.map(op => describeOp(op))
+			);
+		}
+
+		if (this.plan.emptyFolders.length > 0) {
+			this.renderSection(
+				changesContainer,
+				`Empty folders (${this.plan.emptyFolders.length})`,
+				this.plan.emptyFolders.slice(0, 10).map(path => ({
+					primary: path,
+					secondary: '(handled after migration)',
 				}))
 			);
 		}
 
-		// Tag files to create
-		if (this.preview.tagFilesToCreate.length > 0) {
-			this.renderSection(
-				changesContainer,
-				`Tag files to create (${this.preview.tagFilesToCreate.length})`,
-				this.preview.tagFilesToCreate.map((item) => ({
-					primary: `#${item.tagName}`,
-					secondary: item.fromExisting
-						? `from existing: ${item.fromExisting.path}`
-						: item.parentTag
-						? `parent: #${item.parentTag}`
-						: 'new file',
-				}))
-			);
-		}
-
-		// Tags to add
-		if (this.preview.tagsToAdd.length > 0) {
-			this.renderSection(
-				changesContainer,
-				`Tags to add to files (${this.preview.tagsToAdd.length})`,
-				this.preview.tagsToAdd.map((item) => ({
-					primary: item.file.path,
-					secondary: `+ #${item.folderTag}`,
-				}))
-			);
-		}
-
-		// Redundant tags to remove
-		if (this.preview.redundantTagsToRemove.length > 0) {
-			const totalTags = this.preview.redundantTagsToRemove.reduce(
-				(sum, item) => sum + item.tags.length,
-				0
-			);
-			this.renderSection(
-				changesContainer,
-				`Redundant tags to remove (${totalTags} from ${this.preview.redundantTagsToRemove.length} files)`,
-				this.preview.redundantTagsToRemove.map((item) => ({
-					primary: item.file.path,
-					secondary: `- ${item.tags.map((t) => '#' + t).join(', ')}`,
-				}))
-			);
-		}
-
-		// Conflicts to resolve — list each planned rename
-		if (this.preview.conflictRenames.length > 0) {
-			this.renderSection(
-				changesContainer,
-				`Naming conflicts to resolve (${this.preview.conflictRenames.length})`,
-				this.preview.conflictRenames.map((item) => ({
-					primary: item.path,
-					secondary: `#${item.fromName} → #${item.toName}`,
-				}))
-			);
-		}
-
-		// Empty folders (will be handled in post-migration modal)
-		if (this.preview.emptyFolders.length > 0) {
-			this.renderSection(
-				changesContainer,
-				`Empty folders (${this.preview.emptyFolders.length})`,
-				this.preview.emptyFolders.slice(0, 10).map((folder) => ({
-					primary: folder.path,
-					secondary: '(will be handled after migration)',
-				}))
-			);
-		}
-
-		// Buttons
 		const buttonContainer = contentEl.createDiv({ cls: 'taggable-tags-button-container' });
 
 		new Setting(buttonContainer)
 			.addButton((btn) =>
-				btn
-					.setButtonText('Cancel')
-					.onClick(() => {
-						this.userMadeChoice = true;
-						this.resolvePromise?.(false);
-						this.close();
-					})
+				btn.setButtonText('Back to conflicts').onClick(() => {
+					this.userMadeChoice = true;
+					this.resolvePromise?.('back');
+					this.close();
+				})
+			)
+			.addButton((btn) =>
+				btn.setButtonText('Cancel').onClick(() => {
+					this.userMadeChoice = true;
+					this.resolvePromise?.('cancel');
+					this.close();
+				})
 			)
 			.addButton((btn) =>
 				btn
 					.setButtonText('Apply migration')
 					.setCta()
-					.setDisabled(summary.totalChanges === 0)
+					.setDisabled(summary.total === 0)
 					.onClick(() => {
 						this.userMadeChoice = true;
-						this.resolvePromise?.(true);
+						this.resolvePromise?.('apply');
 						this.close();
 					})
 			);
-	}
-
-	private getSummary(): { totalChanges: number } {
-		const totalChanges =
-			this.preview.conflictRenames.length +
-			this.preview.nestedTagsToFlatten.length +
-			this.preview.tagFilesToCreate.length +
-			this.preview.tagsToAdd.length +
-			this.preview.redundantTagsToRemove.reduce((sum, item) => sum + item.tags.length, 0);
-		// Note: empty folders are not counted as changes since they're handled in post-migration modal
-
-		return { totalChanges };
 	}
 
 	private renderSection(
@@ -178,13 +115,10 @@ export class MigrationPreviewModal extends Modal {
 		items: Array<{ primary: string; secondary: string }>
 	): void {
 		const section = container.createDiv({ cls: 'taggable-tags-preview-section' });
-		
 		const header = section.createEl('h4', { text: title });
 		header.addClass('taggable-tags-preview-section-header');
 
 		const list = section.createEl('ul', { cls: 'taggable-tags-preview-list' });
-
-		// Limit displayed items to avoid overwhelming the UI
 		const maxItems = 50;
 		const displayItems = items.slice(0, maxItems);
 
@@ -208,10 +142,13 @@ export class MigrationPreviewModal extends Modal {
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
-		// If modal was closed without a choice, treat as cancel
 		if (!this.userMadeChoice && this.resolvePromise) {
-			this.resolvePromise(false);
+			this.resolvePromise('cancel');
 		}
 		this.resolvePromise = null;
+	}
+
+	getPlanNoteContent(): string {
+		return serializePlanToNote(this.plan);
 	}
 }

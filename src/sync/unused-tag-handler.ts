@@ -1,7 +1,7 @@
 import { TFile, debounce, Notice, normalizePath, CachedMetadata } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { UnusedTagModal } from '../ui/unused-tag-modal';
-import { updateTagProperty, markPluginInitiatedChange } from './file-rename-sync';
+import { updateTagProperty, markPluginInitiatedChange, isPluginInitiatedChange } from './file-rename-sync';
 import { deleteTagAndInstances } from './delete-tag';
 
 // Track tags we've already prompted about to avoid duplicate modals
@@ -81,6 +81,9 @@ export function setupUnusedTagHandler(plugin: TaggableTagsPlugin): void {
 	// Listen for metadata cache changes
 	plugin.registerEvent(
 		plugin.app.metadataCache.on('changed', async (file: TFile) => {
+			if (isPluginInitiatedChange(file.path)) {
+				return;
+			}
 			// Ignore changes in the tag registry note only
 			if (plugin.tagIndex.isTagRegistryNote(file)) {
 				return;
@@ -112,6 +115,9 @@ export function setupUnusedTagHandler(plugin: TaggableTagsPlugin): void {
 	// Listen for file deletion
 	plugin.registerEvent(
 		plugin.app.vault.on('delete', async (file) => {
+			if (file instanceof TFile && isPluginInitiatedChange(file.path)) {
+				return;
+			}
 			if (file instanceof TFile && !plugin.tagIndex.isTagFile(file) && !plugin.tagIndex.isTagRegistryNote(file)) {
 				// Get the tags this file had before deletion
 				const previousTags = plugin.tagIndex.getTagsForFile(file);

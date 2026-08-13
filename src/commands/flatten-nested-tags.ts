@@ -14,8 +14,12 @@ import { joinTagNameSegments, toComparisonKey } from '../utils/tag-naming';
  * Information about a nested tag found in the vault.
  */
 interface NestedTagInfo {
-	/** The full nested tag (without #), e.g., "media/music/songs" */
+	/** The full nested tag (without #), normalized */
 	fullTag: string;
+	/** Raw spelling as found in files (first seen) */
+	rawFullTag: string;
+	/** All raw spellings seen for this nested tag */
+	rawSpellings: Set<string>;
 	/** The hierarchy levels, e.g., ["media", "music", "songs"] */
 	levels: string[];
 	/** The leaf (lowest level) tag, e.g., "songs" */
@@ -216,6 +220,8 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 						addNestedTag(plugin, nestedTags, tag, file);
 					}
 				}
+			} else if (typeof fmTags === 'string' && fmTags.includes('/')) {
+				addNestedTag(plugin, nestedTags, fmTags, file);
 			}
 		}
 
@@ -250,10 +256,14 @@ function addNestedTag(
 		const levels = normalizedTag.split('/');
 		nestedTags.set(normalizedTag, {
 			fullTag: normalizedTag,
+			rawFullTag: withoutHash,
+			rawSpellings: new Set([withoutHash]),
 			levels,
 			leafTag: levels[levels.length - 1],
 			files: new Set(),
 		});
+	} else {
+		nestedTags.get(normalizedTag)!.rawSpellings.add(withoutHash);
 	}
 
 	nestedTags.get(normalizedTag)!.files.add(file);
@@ -517,11 +527,9 @@ async function createDisambiguatedTagFile(
 	if (existingFolder) {
 		filePath = `${existingFolder.path}/${existingFolder.name}.md`;
 	} else {
+		// No matching folder — place tag note at vault root (never create folders during migration)
 		const displayName = plugin.tagIndex.toDisplayName(canonicalName);
-		const basePath = parentFolder ? parentFolder.path : '';
-		filePath = basePath
-			? `${basePath}/${displayName}/${displayName}.md`
-			: `${displayName}/${displayName}.md`;
+		filePath = `${displayName}.md`;
 	}
 
 	const existingFileAtPath = plugin.app.vault.getAbstractFileByPath(filePath);
@@ -532,20 +540,6 @@ async function createDisambiguatedTagFile(
 			return { created: true, tagName: canonicalName };
 		}
 		return { created: false, tagName: canonicalName };
-	}
-
-	if (!existingFolder) {
-		const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
-		if (folderPath) {
-			const folderAtPath = plugin.app.vault.getAbstractFileByPath(folderPath);
-			if (!folderAtPath) {
-				try {
-					await plugin.app.vault.createFolder(folderPath);
-				} catch {
-					// Folder might already exist
-				}
-			}
-		}
 	}
 
 	const content = await generateTagFileContent(plugin, canonicalName, safeParents);
@@ -653,6 +647,7 @@ async function replaceNestedTagInFiles(
 
 /**
  * Replaces a nested tag with the resolved leaf tag in a single file.
+ * Uses raw spellings from the vault so hyphen/space/case variants are replaced.
  */
 async function replaceNestedTagInFile(
 	plugin: TaggableTagsPlugin,
@@ -660,53 +655,58 @@ async function replaceNestedTagInFile(
 	tagInfo: NestedTagInfo,
 	replacementLeaf: string
 ): Promise<boolean> {
-	const content = await plugin.app.vault.read(file);
-	const fullTag = tagInfo.fullTag;
-	const leafTag = replacementLeaf;
-
-	const escapedFullTag = fullTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-	let newContent = content;
+	const normalizedReplacement = plugin.tagIndex.normalizeTag(replacementLeaf);
 	let modified = false;
 
-	const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
-	const fmMatch = content.match(frontmatterRegex);
-	if (fmMatch) {
-		const frontmatter = fmMatch[1];
-		let newFrontmatter = frontmatter;
-
-		const inlineRegex = new RegExp(
-			`(tags:\\s*\\[[^\\]]*?(?:^|[\\[,\\s]))${escapedFullTag}(?=[\\],\\s]|$)`,
-			'm'
-		);
-		if (inlineRegex.test(newFrontmatter)) {
-			newFrontmatter = newFrontmatter.replace(inlineRegex, `$1${leafTag}`);
+	// Replace all raw spellings in inline body tags
+	const content = await plugin.app.vault.read(file);
+	let newContent = content;
+	for (const raw of tagInfo.rawSpellings) {
+		const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const inlineTagRegex = new RegExp(`#${escaped}(?![\\w/])`, 'g');
+		if (inlineTagRegex.test(newContent)) {
+			newContent = newContent.replace(inlineTagRegex, `#${normalizedReplacement}`);
 			modified = true;
 		}
-
-		const multilineRegex = new RegExp(
-			`(^\\s+-\\s+)${escapedFullTag}(\\s*)$`,
-			'm'
-		);
-		if (multilineRegex.test(newFrontmatter)) {
-			newFrontmatter = newFrontmatter.replace(multilineRegex, `$1${leafTag}$2`);
-			modified = true;
-		}
-
-		if (modified) {
-			newContent = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
-		}
 	}
-
-	const inlineTagRegex = new RegExp(`#${escapedFullTag}(?![\\w/\\-])`, 'g');
-	if (inlineTagRegex.test(newContent)) {
-		newContent = newContent.replace(inlineTagRegex, `#${leafTag}`);
-		modified = true;
-	}
-
 	if (modified) {
 		await plugin.app.vault.modify(file, newContent);
 	}
 
+	// Frontmatter via processFrontMatter (handles scalar tags, arrays, and spelling variants)
+	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+		const tags = normalizeFmTagsValue(fm.tags);
+		if (tags === null) return;
+
+		let changed = false;
+		const updated = tags.map(t => {
+			for (const raw of tagInfo.rawSpellings) {
+				if (t === raw || plugin.tagIndex.tagsMatch(t, tagInfo.fullTag)) {
+					changed = true;
+					return normalizedReplacement;
+				}
+			}
+			return t;
+		});
+
+		if (changed) {
+			const deduped: string[] = [];
+			for (const t of updated) {
+				if (!deduped.some(d => plugin.tagIndex.tagsMatch(d, t))) {
+					deduped.push(t);
+				}
+			}
+			fm.tags = deduped;
+			modified = true;
+		}
+	});
+
 	return modified;
+}
+
+function normalizeFmTagsValue(tags: unknown): string[] | null {
+	if (tags === undefined || tags === null) return null;
+	if (typeof tags === 'string') return [tags];
+	if (Array.isArray(tags)) return tags.filter((t): t is string => typeof t === 'string');
+	return null;
 }

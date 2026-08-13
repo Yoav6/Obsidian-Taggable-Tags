@@ -4,6 +4,18 @@ import { createTagFile } from './auto-create';
 import { replaceTagEverywhere, markPluginInitiatedChange } from './file-rename-sync';
 import { parseFrontmatter, serializeFrontmatter } from '../utils/tag-template';
 import { filterSafeParentTags } from '../utils/cycle-prevention';
+import type { PlanOp } from '../migration/plan';
+
+/**
+ * Plan op for merging two tags (used by migration planner).
+ */
+export function planMergeTagsOp(
+	survivor: string,
+	removed: string,
+	reason: string
+): Extract<PlanOp, { kind: 'merge-tags' }> {
+	return { kind: 'merge-tags', survivor, removed, reason };
+}
 
 /**
  * Merge removedTag into survivorTag. The survivor keeps its identity and gains
@@ -168,24 +180,26 @@ async function dedupeTagInAllFiles(plugin: TaggableTagsPlugin, tag: string): Pro
 }
 
 async function dedupeTagInFile(plugin: TaggableTagsPlugin, file: TFile, tag: string): Promise<boolean> {
-	const content = await plugin.app.vault.read(file);
-	const { frontmatter, body } = parseFrontmatter(content);
-	if (!frontmatter || !Array.isArray(frontmatter.tags)) return false;
-
-	const deduped: string[] = [];
-	for (const entry of frontmatter.tags) {
-		if (typeof entry !== 'string') continue;
-		if (deduped.some(existing => plugin.tagIndex.tagsMatch(existing, entry))) continue;
-		deduped.push(entry);
-	}
-
-	if (deduped.length === frontmatter.tags.length) return false;
-
-	frontmatter.tags = deduped;
-	const newContent = `---\n${serializeFrontmatter(frontmatter)}\n---\n${body}`;
+	let changed = false;
 	markPluginInitiatedChange(file.path);
-	await plugin.app.vault.modify(file, newContent);
-	return true;
+
+	// Touch only the tags property; other frontmatter is none of this pass's business.
+	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+		if (!Array.isArray(fm.tags)) return;
+
+		const deduped: string[] = [];
+		for (const entry of fm.tags) {
+			if (typeof entry !== 'string') continue;
+			if (deduped.some(existing => plugin.tagIndex.tagsMatch(existing, entry))) continue;
+			deduped.push(entry);
+		}
+
+		if (deduped.length === fm.tags.length) return;
+		fm.tags = deduped;
+		changed = true;
+	});
+
+	return changed;
 }
 
 export function describeMergeTags(plugin: TaggableTagsPlugin, survivorTag: string, removedTag: string): string {

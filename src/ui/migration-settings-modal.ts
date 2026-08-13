@@ -107,6 +107,7 @@ export class MigrationSettingsModal extends Modal {
 		infoList.createEl('li', { text: '"Use existing files as tags" → Automatically use (no prompts)' });
 		infoList.createEl('li', { text: '"Keep original folder tag" → Always keep (no prompts)' });
 		infoList.createEl('li', { text: '"Auto-create tag notes" → Off (prevents race conditions)' });
+		infoList.createEl('li', { text: '"Ask about unused tag files" → Off (no prompts)' });
 		infoDiv.createEl('p', {
 			text: 'Your original settings will be restored after migration.',
 		});

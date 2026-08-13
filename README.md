@@ -2,13 +2,15 @@
 
 # Taggable Tags
 
-A powerful Obsidian plugin turning tags into taggable tag notes, while synchronizing between your tag hierarchy and folder hierarchy.
+A powerful Obsidian plugin turning tags into taggable tag notes, and optionally maintaining a folder hierarchy synchronized to your tag hierarchy.
 
 ## Philosophy
 - Folders are unatural for categorizing knowledge. Every group can be a part of multiple other groups.
 - Tags should be notes. Every note can become a tag. Your tag hierarchy is a note hierarchy.
 - Create notes without thinking of categorization, and categorize as you go. Don't plan ahead.
 - Don't count on always and everyone having software that parses tagged tags. Maintain a fallback folder organization.
+
+Obsidian's website says invites you to "Invent your own personal Wikipedia". Categories have their own page with text, and can have several parent categories. Obsidian tags should work the same.
 
 ## Main Features
 
