@@ -6,7 +6,7 @@ import { setupFileRenameSync } from './sync/file-rename-sync';
 import { setupUnusedTagHandler } from './sync/unused-tag-handler';
 import { setupFolderSync } from './sync/folder-sync';
 import { setupHoverPreview } from './ui/hover-preview';
-import { registerTagExplorerView, TAG_EXPLORER_VIEW_TYPE } from './ui/tag-explorer-view';
+import { registerTagExplorerView } from './ui/tag-explorer-view';
 import { setupTagClickNavigation } from './ui/tag-click-navigation';
 import { showRearrangeTagsModal } from './ui/rearrange-tags-modal';
 import { flattenNestedTags } from './commands/flatten-nested-tags';
@@ -34,41 +34,41 @@ export default class TaggableTagsPlugin extends Plugin {
 		this.addCommand({
 			id: 'rearrange-tag-order',
 			name: 'Rearrange tag order in current note',
-			callback: () => showRearrangeTagsModal(this),
+			callback: () => void showRearrangeTagsModal(this),
 		});
 
 		this.addCommand({
 			id: 'flatten-nested-tags',
 			name: 'Utility: flatten nested tags (vault-wide)',
-			callback: () => flattenNestedTags(this),
+			callback: () => void flattenNestedTags(this),
 		});
 
 		this.addCommand({
 			id: 'flatten-file-structure',
 			name: 'Utility: flatten file structure (vault-wide)',
-			callback: () => flattenFileStructure(this),
+			callback: () => void flattenFileStructure(this),
 		});
 
 		this.addCommand({
 			id: 'migrate-vault',
-			name: 'Migrate vault to Taggable Tags',
-			callback: () => migrateVault(this),
+			name: 'Migrate vault',
+			callback: () => void migrateVault(this),
 		});
 
 		this.addCommand({
 			id: 'find-circular-tags',
 			name: 'Utility: find circular tag relationships',
-			callback: () => findCircularTags(this),
+			callback: () => void findCircularTags(this),
 		});
 
 		this.addCommand({
 			id: 'refresh-tag-index',
 			name: 'Utility: refresh tag index and explorer',
-			callback: () => refreshTagIndex(this),
+			callback: () => void refreshTagIndex(this),
 		});
 		
 		// Wait for layout to be ready before initializing
-		this.app.workspace.onLayoutReady(async () => {
+		this.app.workspace.onLayoutReady(() => { void (async () => {
 			await this.tagIndex.rebuild();
 			await this.updateTagRegistry();
 			
@@ -82,7 +82,7 @@ export default class TaggableTagsPlugin extends Plugin {
 			setupHoverPreview(this);
 			setupTagClickNavigation(this);
 			setupGraphCompat(this);
-		});
+		})(); });
 
 		// Add settings tab
 		this.addSettingTab(new TaggableTagsSettingTab(this.app, this));
@@ -99,9 +99,9 @@ export default class TaggableTagsPlugin extends Plugin {
 				menu.addItem((item) => {
 					item.setTitle('Convert to tag note')
 						.setIcon('tag')
-						.onClick(async () => {
+						.onClick(() => { void (async () => {
 							await this.convertToTagNote(file);
-						});
+						})(); });
 				});
 			})
 		);
@@ -141,8 +141,6 @@ export default class TaggableTagsPlugin extends Plugin {
 
 	onunload() {
 		teardownGraphCompat(this);
-		// Detach any tag explorer views
-		this.app.workspace.detachLeavesOfType(TAG_EXPLORER_VIEW_TYPE);
 	}
 
 	/**
@@ -203,7 +201,11 @@ Note that since this file isn't supposed to be viewed, the view isn't refreshed 
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data: unknown = await this.loadData();
+		const loaded = (data && typeof data === 'object' && !Array.isArray(data))
+			? data as Partial<TaggableTagsSettings>
+			: {};
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
 		// Migrate / sanitize naming settings; drop removed forceLowercase if present
 		const raw = this.settings as TaggableTagsSettings & { forceLowercase?: boolean };
 		delete raw.forceLowercase;

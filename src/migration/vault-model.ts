@@ -1,4 +1,5 @@
 import { TFile, TFolder } from 'obsidian';
+import { readFrontmatterTags } from '../utils/frontmatter';
 import type TaggableTagsPlugin from '../main';
 import { namesMatch, toComparisonKey } from '../utils/tag-naming';
 import { isInExcludedFolder, isExcludedFolderPath } from '../sync/folder-sync';
@@ -118,7 +119,6 @@ export class VaultModel {
 
 	private addFile(file: TFile): void {
 		const cache = this.plugin.app.metadataCache.getFileCache(file);
-		const propName = this.plugin.settings.tagPropertyName;
 		const tagName = this.plugin.tagIndex.getTagForFilePath(file.path)
 			?? (this.plugin.tagIndex.isTagFile(file) ? this.plugin.tagIndex.fileToTagName(file) : null);
 
@@ -126,28 +126,13 @@ export class VaultModel {
 		const rawTags: string[] = [];
 		const inlineTags: string[] = [];
 		const rawInlineTags: string[] = [];
-		if (cache?.frontmatter?.tags) {
-			const fmTags = cache.frontmatter.tags;
-			if (Array.isArray(fmTags)) {
-				for (const t of fmTags) {
-					if (typeof t === 'string') {
-						if (t.includes('/')) {
-							rawInlineTags.push(t);
-							inlineTags.push(this.normalizeTag(t.split('/').pop() ?? t));
-						} else {
-							rawTags.push(t);
-							tags.push(this.normalizeTag(t));
-						}
-					}
-				}
-			} else if (typeof fmTags === 'string') {
-				if (fmTags.includes('/')) {
-					rawInlineTags.push(fmTags);
-					inlineTags.push(this.normalizeTag(fmTags.split('/').pop() ?? fmTags));
-				} else {
-					rawTags.push(fmTags);
-					tags.push(this.normalizeTag(fmTags));
-				}
+		for (const t of readFrontmatterTags(cache)) {
+			if (t.includes('/')) {
+				rawInlineTags.push(t);
+				inlineTags.push(this.normalizeTag(t.split('/').pop() ?? t));
+			} else {
+				rawTags.push(t);
+				tags.push(this.normalizeTag(t));
 			}
 		}
 
@@ -601,8 +586,7 @@ export class VaultModel {
 			this.fileTags.delete(removedPath);
 		}
 
-		for (const [fPath, file] of this.files) {
-			const allTags = [...file.tags, ...file.inlineTags];
+		for (const file of this.files.values()) {
 			let changed = false;
 			const newTags = file.tags.map(t => {
 				if (this.tagsMatch(t, removedCanonical)) {

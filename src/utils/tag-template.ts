@@ -1,6 +1,7 @@
 import { TFile } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { filterSafeParentTags } from './cycle-prevention';
+import { processFrontmatterRecord } from './frontmatter';
 
 /**
  * Parse YAML frontmatter from file content.
@@ -72,11 +73,11 @@ export function serializeFrontmatter(frontmatter: Record<string, unknown>): stri
 			} else {
 				lines.push(`${key}:`);
 				for (const item of value) {
-					lines.push(`  - ${item}`);
+					lines.push(`  - ${String(item)}`);
 				}
 			}
 		} else {
-			lines.push(`${key}: ${value}`);
+			lines.push(`${key}: ${String(value)}`);
 		}
 	}
 	
@@ -206,7 +207,7 @@ export async function addTagPropertiesToFile(
 	// Obsidian's own frontmatter editor, so properties this plugin knows nothing
 	// about survive untouched. Reading and re-serializing the whole block loses
 	// anything the naive parser can't represent, such as multi-line values.
-	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+	await processFrontmatterRecord(plugin.app, file, (fm) => {
 		fm[propName] = tagName;
 		// Intended parents only — never merge prior tags: entries as hierarchy parents
 		fm['tags'] = [...parents];

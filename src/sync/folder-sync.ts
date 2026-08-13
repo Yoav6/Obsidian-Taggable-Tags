@@ -1,5 +1,6 @@
 import { TFile, TFolder, normalizePath, debounce } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { readFrontmatterTags } from '../utils/frontmatter';
 import type { TagIndex } from './tag-index';
 import { markPluginInitiatedChange, isPluginInitiatedChange } from './file-rename-sync';
 import { setFirstTag, removeTag } from '../utils/tag-ordering';
@@ -32,7 +33,7 @@ let debouncedSyncFileToFolder: ((plugin: TaggableTagsPlugin, file: TFile) => voi
 export function markPluginInitiatedMove(path: string): void {
 	pluginInitiatedMoves.add(path);
 	// Clean up after a short delay in case the move fails
-	setTimeout(() => {
+	window.setTimeout(() => {
 		pluginInitiatedMoves.delete(path);
 	}, 5000);
 }
@@ -83,12 +84,12 @@ export function setupFolderSync(plugin: TaggableTagsPlugin): void {
 					return;
 				}
 				const oldPathForRename = oldPath;
-				setTimeout(() => {
+				window.setTimeout(() => {
 					// Re-fetch by current path in case the vault has updated it
 					const folderByPath = plugin.app.vault.getAbstractFileByPath(file.path);
-					let folder = (folderByPath instanceof TFolder ? folderByPath : file) as TFolder;
+					const folder = folderByPath instanceof TFolder ? folderByPath : file;
 					if (folder.path !== oldPathForRename) {
-						handleFolderCreation(plugin, folder);
+						void handleFolderCreation(plugin, folder);
 						return;
 					}
 					// Fallback: object may never get updated (path still old). If old path was a placeholder
@@ -108,7 +109,7 @@ export function setupFolderSync(plugin: TaggableTagsPlugin): void {
 						return tag != null && plugin.tagIndex.getTagFile(tag) == null;
 					});
 					if (foldersWithoutTagFile.length === 1) {
-						handleFolderCreation(plugin, foldersWithoutTagFile[0]);
+						void handleFolderCreation(plugin, foldersWithoutTagFile[0]);
 					}
 				}, 100);
 				return;
@@ -413,14 +414,9 @@ function resolveTagPathForFile(plugin: TaggableTagsPlugin, file: TFile, tagName:
 		if (isFirstIteration) {
 			// For the first tag (the file being synced), read directly from metadata cache
 			const cache = plugin.app.metadataCache.getFileCache(file);
-			const fmTags = cache?.frontmatter?.tags;
-			if (Array.isArray(fmTags)) {
-				parents = fmTags
-					.filter((t): t is string => typeof t === 'string' && !t.includes('/'))
-					.map(t => plugin.tagIndex.normalizeTag(t));
-			} else {
-				parents = [];
-			}
+			parents = readFrontmatterTags(cache)
+				.filter(t => !t.includes('/'))
+				.map(t => plugin.tagIndex.normalizeTag(t));
 			isFirstIteration = false;
 		} else {
 			// For ancestors, use the tag index (acceptable to be slightly stale)
@@ -555,7 +551,7 @@ async function moveTagFolder(plugin: TaggableTagsPlugin, folder: TFolder, target
 
 	try {
 		await plugin.app.vault.rename(folder, newFolderPath);
-	} catch (error) {
+	} catch {
 		clearPluginInitiatedMove(oldPath);
 		clearPluginInitiatedMove(newFolderPath);
 		for (const path of filePathsUnderFolder) {
@@ -592,7 +588,7 @@ async function moveFileToFolder(plugin: TaggableTagsPlugin, file: TFile, targetF
 
 	try {
 		await plugin.app.fileManager.renameFile(file, newPath);
-	} catch (error) {
+	} catch {
 		clearPluginInitiatedMove(file.path);
 		clearPluginInitiatedMove(newPath);
 	}
@@ -614,7 +610,7 @@ export async function ensureFolderExists(plugin: TaggableTagsPlugin, folderPath:
 	// Create folder and any missing parents
 	try {
 		await plugin.app.vault.createFolder(normalizedPath);
-	} catch (error) {
+	} catch {
 		// Folder might already exist or parent needs to be created
 		// Try creating parent folders first
 		const parts = normalizedPath.split('/');
@@ -869,7 +865,7 @@ async function createTagFileForFolder(plugin: TaggableTagsPlugin, folder: TFolde
 	try {
 		const file = await plugin.app.vault.create(tagFilePath, content);
 		plugin.tagIndex.onTagFileCreated(file, tagName);
-	} catch (error) {
+	} catch {
 		const created = plugin.app.vault.getAbstractFileByPath(tagFilePath);
 		if (created instanceof TFile) {
 			plugin.tagIndex.onTagFileCreated(created, tagName);
@@ -1074,7 +1070,7 @@ function setupPeriodicVaultSync(plugin: TaggableTagsPlugin): void {
 	plugin.registerInterval(
 		window.setInterval(() => {
 			if (plugin.settings.syncFoldersWithTags && plugin.settings.autoSyncEntireVault) {
-				syncEntireVault(plugin);
+				void syncEntireVault(plugin);
 			}
 		}, 5000) // Check every 5 seconds
 	);
@@ -1142,5 +1138,5 @@ export async function syncEntireVault(plugin: TaggableTagsPlugin): Promise<void>
  * Helper function to sleep for a given number of milliseconds.
  */
 function sleep(ms: number): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, ms));
+	return new Promise(resolve => window.setTimeout(resolve, ms));
 }

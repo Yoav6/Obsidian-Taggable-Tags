@@ -30,14 +30,13 @@ export class MergeTagsModal extends Modal {
 
 		this.renderContent(contentEl);
 
-		const buttonContainer = contentEl.createEl('div', { cls: 'modal-buttons' });
-		buttonContainer.style.marginTop = '16px';
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-buttons tt-modal-buttons-spaced' });
 
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 
 		const confirmBtn = buttonContainer.createEl('button', { text: 'Merge', cls: 'mod-cta' });
-		confirmBtn.addEventListener('click', () => this.performMerge());
+		confirmBtn.addEventListener('click', () => void this.performMerge());
 	}
 
 	private renderContent(container: HTMLElement): void {
@@ -45,11 +44,11 @@ export class MergeTagsModal extends Modal {
 		container.addClass('create-tag-from-filters-modal');
 		container.addClass('merge-tags-modal');
 
-		const headingRow = container.createEl('div', { cls: 'merge-tags-heading' });
+		const headingRow = container.createDiv({ cls: 'merge-tags-heading' });
 
-		headingRow.createEl('span', { text: 'Merge', cls: 'merge-tags-heading-label' });
+		headingRow.createSpan({ text: 'Merge', cls: 'merge-tags-heading-label' });
 
-		const removedChip = headingRow.createEl('span', {
+		const removedChip = headingRow.createSpan({
 			text: `#${this.removedTag}`,
 			cls: 'modal-chip modal-chip-tag merge-tags-chip merge-tags-chip-removed',
 		});
@@ -66,9 +65,9 @@ export class MergeTagsModal extends Modal {
 			this.updateSummary();
 		});
 
-		headingRow.createEl('span', { text: 'into', cls: 'merge-tags-heading-label' });
+		headingRow.createSpan({ text: 'into', cls: 'merge-tags-heading-label' });
 
-		const survivorChip = headingRow.createEl('span', {
+		const survivorChip = headingRow.createSpan({
 			text: `#${this.survivorTag}`,
 			cls: 'modal-chip modal-chip-tag merge-tags-chip',
 		});

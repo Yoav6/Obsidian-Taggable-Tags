@@ -104,10 +104,10 @@ export class MigrationSettingsModal extends Modal {
 			text: 'The following settings will be temporarily applied during migration to ensure smooth operation:',
 		});
 		const infoList = infoDiv.createEl('ul');
-		infoList.createEl('li', { text: '"Use existing files as tags" → Automatically use (no prompts)' });
-		infoList.createEl('li', { text: '"Keep original folder tag" → Always keep (no prompts)' });
-		infoList.createEl('li', { text: '"Auto-create tag notes" → Off (prevents race conditions)' });
-		infoList.createEl('li', { text: '"Ask about unused tag files" → Off (no prompts)' });
+		infoList.createEl('li', { text: '"use existing files as tags" → automatically use (no prompts)' });
+		infoList.createEl('li', { text: '"keep original folder tag" → always keep (no prompts)' });
+		infoList.createEl('li', { text: '"auto-create tag notes" → off (prevents race conditions)' });
+		infoList.createEl('li', { text: '"ask about unused tag files" → off (no prompts)' });
 		infoDiv.createEl('p', {
 			text: 'Your original settings will be restored after migration.',
 		});

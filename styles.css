@@ -565,3 +565,658 @@ If your plugin does not need CSS, delete this file.
 	font-family: var(--font-monospace);
 	font-size: var(--font-ui-smaller);
 }
+
+/* Tag explorer view */
+.taggable-tags-explorer {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	padding: 0 !important;
+}
+/* Fixed header container - does not scroll */
+.taggable-tags-explorer .fixed-header {
+	flex-shrink: 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+/* Scrollable content area */
+.taggable-tags-explorer .scroll-container {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 0;
+	padding-left: 4px;
+	padding-top: 5px;
+	padding-bottom: 2px;
+}
+/* Remove padding/margin from containers to eliminate scrollbar gap */
+.taggable-tags-explorer .nav-files-container {
+	position: relative;
+	padding: 0 !important;
+	margin: 0 !important;
+}
+.taggable-tags-explorer .nav-folder.mod-root {
+	padding: 0 !important;
+	margin: 0 !important;
+}
+.taggable-tags-explorer .virtual-list-spacer {
+	pointer-events: none;
+	height: var(--tt-spacer-height, 0px);
+}
+.taggable-tags-explorer .virtual-list-window {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: var(--tt-window-top, 0px);
+}
+.taggable-tags-explorer .virtual-row {
+	height: 26px;
+	overflow: hidden;
+}
+.taggable-tags-explorer .virtual-row > .tree-item {
+	margin-bottom: 0 !important;
+}
+.taggable-tags-explorer .tree-item {
+	padding-right: 0 !important;
+	margin-right: 0 !important;
+	margin-bottom: 4px;
+}
+.taggable-tags-explorer .tree-item-children {
+	padding-right: 0 !important;
+	margin-right: 0 !important;
+}
+.taggable-tags-explorer .nav-header {
+	padding-top: 6px;
+	padding-right: 8px;
+	padding-bottom: 0;
+	padding-left: 8px;
+}
+.taggable-tags-explorer .nav-buttons-container {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	margin-right: 16px;
+}
+.taggable-tags-explorer .nav-action-button {
+	padding: 4px;
+	border-radius: 4px;
+}
+.taggable-tags-explorer .nav-action-button:hover {
+	background-color: var(--background-modifier-hover);
+}
+.taggable-tags-explorer .nav-action-button.is-active {
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+.taggable-tags-explorer .nav-action-button.is-disabled {
+	opacity: 0.3;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+.taggable-tags-explorer .empty-state {
+	padding: 16px;
+	color: var(--text-muted);
+	font-style: italic;
+	pointer-events: none;
+}
+/* Tag and file items */
+.taggable-tags-explorer .tree-item-self {
+	display: flex;
+	align-items: center;
+	padding-top: 2px;
+	padding-right: 8px;
+	padding-bottom: 2px;
+	padding-left: 8px;
+	padding-inline-start: 8px;
+	border-radius: 4px;
+	gap: 6px;
+}
+.taggable-tags-explorer .file-item {
+	cursor: pointer;
+}
+.taggable-tags-explorer .tree-item-self:hover {
+	background-color: var(--background-modifier-hover);
+}
+/* Collapse arrow - like Obsidian file explorer */
+.taggable-tags-explorer .collapse-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	flex-shrink: 0;
+	color: var(--nav-collapse-icon-color);
+}
+.taggable-tags-explorer .collapse-icon svg {
+	width: 16px;
+	height: 16px;
+}
+/* Occupies the same width as .collapse-icon so file titles align with tag titles */
+.taggable-tags-explorer .file-indent-spacer {
+	width: 18px;
+	height: 18px;
+	flex-shrink: 0;
+	pointer-events: none;
+}
+/* Tag name - clickable to open file */
+.taggable-tags-explorer .tag-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.taggable-tags-explorer .tag-name:hover {
+	text-decoration: underline;
+}
+/* Combined tag parts - each individually clickable */
+.taggable-tags-explorer .tag-name-part {
+	cursor: pointer;
+}
+.taggable-tags-explorer .tag-name-part:hover {
+	text-decoration: underline;
+}
+.taggable-tags-explorer .tag-name-separator {
+	color: var(--text-muted);
+	cursor: default;
+}
+/* When hovering the container, don't underline everything */
+.taggable-tags-explorer .tag-name:has(.tag-name-part):hover {
+	text-decoration: none;
+}
+/* Tags without corresponding files - grayed out */
+.taggable-tags-explorer .tag-no-file .tag-name {
+	opacity: 0.5;
+}
+/* Individual tag name without file (in combined tags) */
+.taggable-tags-explorer .tag-name-no-file {
+	opacity: 0.5;
+}
+/* List mode items - no extra padding, with icon */
+.taggable-tags-explorer .list-mode-item {
+	padding-left: 4px !important;
+}
+.taggable-tags-explorer .list-mode-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+.taggable-tags-explorer .list-mode-icon svg {
+	width: 14px;
+	height: 14px;
+}
+/* File name */
+.taggable-tags-explorer .file-name {
+	flex-grow: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-muted);
+}
+/* Inline rename input - matches native file explorer styling */
+.taggable-tags-explorer .rename-input {
+	all: unset;
+	background: transparent;
+	box-shadow: 0 0 0 2px var(--interactive-accent);
+	border-radius: 5px;
+	padding: 0 1px;
+	font-size: inherit;
+	font-family: inherit;
+	color: var(--text-muted);
+	width: 100%;
+}
+/* Highlighted state */
+.taggable-tags-explorer .is-highlighted {
+	background-color: var(--text-selection) !important;
+}
+/* Multi-select state */
+.taggable-tags-explorer .tree-item-self.is-selected {
+	background-color: var(--text-selection);
+}
+.taggable-tags-explorer .tree-item-self.is-selected:hover {
+	background-color: var(--text-selection);
+}
+/* Untagged group */
+.taggable-tags-explorer .untagged-label {
+	color: var(--text-muted);
+	font-style: italic;
+}
+.taggable-tags-explorer .untagged-item:hover .untagged-label {
+	text-decoration: none;
+}
+/* Attachment groups */
+.taggable-tags-explorer .attachment-group-label,
+.taggable-tags-explorer .attachment-subgroup-label {
+	color: var(--text-muted);
+	font-style: italic;
+}
+.taggable-tags-explorer .attachment-group-item:hover .attachment-group-label,
+.taggable-tags-explorer .attachment-subgroup-item:hover .attachment-subgroup-label {
+	text-decoration: none;
+}
+/* File format label (right side, like Obsidian's file explorer) */
+.taggable-tags-explorer .nav-file-tag {
+	flex-shrink: 0;
+	font-size: var(--font-smaller);
+	line-height: 1.4;
+	text-transform: uppercase;
+	color: var(--text-faint);
+	background-color: transparent;
+}
+/* Filter bar */
+.taggable-tags-explorer .filter-bar {
+	padding: 8px;
+}
+.taggable-tags-explorer .filter-input-container {
+	position: relative;
+	width: 100%;
+}
+.taggable-tags-explorer .filter-input {
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background-color: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 13px;
+	box-sizing: border-box;
+}
+.taggable-tags-explorer .filter-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+.taggable-tags-explorer .filter-input::placeholder {
+	color: var(--text-muted);
+}
+.taggable-tags-explorer .filter-suggestions {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	max-height: 200px;
+	overflow-y: auto;
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	margin-top: 2px;
+	z-index: 1000;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.taggable-tags-explorer .filter-suggestion-item {
+	display: flex;
+	align-items: stretch;
+	justify-content: space-between;
+	padding: 0;
+	cursor: pointer;
+	font-size: 13px;
+}
+.taggable-tags-explorer .filter-suggestion-item:hover,
+.taggable-tags-explorer .filter-suggestion-item.is-selected {
+	background-color: var(--background-modifier-hover);
+}
+.taggable-tags-explorer .filter-suggestion-text {
+	flex-grow: 1;
+	display: flex;
+	align-items: center;
+	padding: 6px 10px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.taggable-tags-explorer .filter-suggestion-exclude {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	padding: 6px 10px;
+	cursor: pointer;
+	opacity: 0.5;
+	font-size: 14px;
+}
+.taggable-tags-explorer .filter-suggestion-exclude:hover {
+	opacity: 1;
+	background-color: rgba(var(--color-red-rgb, 255, 0, 0), 0.15);
+}
+/* Filter chips - styled like Obsidian tags */
+.taggable-tags-explorer .filter-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 8px;
+	align-items: center;
+}
+.taggable-tags-explorer .filter-clear-all {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	cursor: pointer;
+	border-radius: 50%;
+	color: var(--text-muted);
+	opacity: 0.7;
+	flex-shrink: 0;
+}
+.taggable-tags-explorer .filter-clear-all:hover {
+	opacity: 1;
+	background-color: var(--background-modifier-hover);
+}
+.taggable-tags-explorer .filter-clear-all svg {
+	width: 14px;
+	height: 14px;
+}
+.taggable-tags-explorer .filter-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	background-color: rgba(var(--interactive-accent-rgb), 0.15);
+	color: var(--interactive-accent);
+	border-radius: 14px;
+	font-size: 13px;
+	line-height: 1.4;
+}
+.taggable-tags-explorer .filter-chip-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	cursor: pointer;
+	border-radius: 50%;
+	opacity: 0.7;
+	flex-shrink: 0;
+}
+.taggable-tags-explorer .filter-chip-toggle:hover {
+	opacity: 1;
+	background-color: var(--background-modifier-hover);
+}
+.taggable-tags-explorer .filter-chip-toggle svg {
+	width: 12px;
+	height: 12px;
+}
+.taggable-tags-explorer .filter-chip-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.taggable-tags-explorer .filter-chip-text:hover {
+	text-decoration: underline;
+}
+/* Excluded filter chips - red styling */
+.taggable-tags-explorer .filter-chip-excluded {
+	background-color: rgba(var(--color-red-rgb, 255, 59, 48), 0.15);
+	color: var(--color-red, #ff3b30);
+}
+.taggable-tags-explorer .filter-chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	cursor: pointer;
+	border-radius: 50%;
+	opacity: 0.7;
+	flex-shrink: 0;
+}
+.taggable-tags-explorer .filter-chip-remove:hover {
+	opacity: 1;
+}
+.taggable-tags-explorer .filter-chip-remove svg {
+	width: 12px;
+	height: 12px;
+}
+/* Filter actions container */
+.taggable-tags-explorer .filter-actions-container {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
+}
+/* Create tag from filters button */
+.taggable-tags-explorer .create-tag-button {
+	flex: 1;
+	padding: 6px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: 13px;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+.taggable-tags-explorer .create-tag-button:hover {
+	background-color: var(--background-modifier-hover);
+}
+/* Filter action icon buttons */
+.taggable-tags-explorer .filter-action-buttons {
+	display: flex;
+	gap: 4px;
+	flex-shrink: 0;
+}
+.taggable-tags-explorer .filter-action-button {
+	padding: 6px;
+	border-radius: 4px;
+	color: var(--text-muted);
+}
+.taggable-tags-explorer .filter-action-button:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+/* Create tag from filters modal */
+.create-tag-from-filters-modal {
+	padding: 16px;
+}
+.create-tag-from-filters-modal .modal-label {
+	font-size: 14px;
+	color: var(--text-muted);
+	margin: 12px 0 8px 0;
+}
+.create-tag-from-filters-modal .modal-label:first-child {
+	margin-top: 0;
+}
+.create-tag-from-filters-modal .modal-chips-container {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.create-tag-from-filters-modal .modal-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 10px;
+	border-radius: 14px;
+	font-size: 13px;
+}
+.create-tag-from-filters-modal .modal-chip-tag {
+	background-color: rgba(var(--interactive-accent-rgb), 0.15);
+	color: var(--interactive-accent);
+}
+.create-tag-from-filters-modal .modal-chip-item {
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+}
+.create-tag-from-filters-modal .modal-chip-file {
+	background-color: var(--background-secondary);
+	color: var(--text-muted);
+}
+.create-tag-from-filters-modal .modal-empty-text {
+	color: var(--text-muted);
+	font-style: italic;
+	font-size: 13px;
+}
+.create-tag-from-filters-modal .modal-input-container {
+	margin: 8px 0 16px 0;
+}
+.create-tag-from-filters-modal .modal-input {
+	width: 100%;
+	padding: 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background-color: var(--background-primary);
+	color: var(--text-normal);
+	font-size: 14px;
+	box-sizing: border-box;
+}
+.create-tag-from-filters-modal .modal-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+.create-tag-from-filters-modal .modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.merge-tags-modal .merge-tags-heading {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.merge-tags-modal .merge-tags-heading-label {
+	color: var(--text-muted);
+}
+.merge-tags-modal .merge-tags-swap-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 4px;
+	border-radius: 4px;
+}
+.merge-tags-modal .merge-tags-swap-button:hover {
+	background-color: var(--background-modifier-hover);
+}
+.merge-tags-modal .merge-tags-summary {
+	margin: 0;
+	line-height: 1.5;
+}
+
+.taggable-tags-explorer .tree-item-self.tt-indent {
+	padding-left: var(--tt-indent, 4px);
+	padding-inline-start: var(--tt-indent, 4px);
+}
+/* Core nav-file styles add extra inline padding for a missing collapse icon.
+   That used to be overridden by inline padding-left; keep the explorer's indent as the only offset. */
+.taggable-tags-explorer .nav-file > .tree-item-self.tt-indent {
+	margin-left: 0;
+	margin-inline-start: 0;
+}
+.taggable-tags-explorer .filter-suggestions.is-hidden {
+	display: none;
+	pointer-events: none;
+}
+
+/* Shared modal layout */
+.tt-modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.tt-modal-buttons-spaced {
+	margin-top: 16px;
+}
+.tt-modal-input-block {
+	margin-bottom: 16px;
+}
+.tt-modal-input {
+	width: 100%;
+	padding: 8px;
+}
+.tt-modal-label {
+	display: block;
+	margin-bottom: 4px;
+}
+.tt-modal-desc {
+	margin-bottom: 16px;
+}
+.tt-modal-info-panel {
+	margin-bottom: 16px;
+	padding: 8px 12px;
+	background-color: var(--background-secondary);
+	border-radius: 4px;
+}
+.tt-modal-mono {
+	font-family: var(--font-monospace);
+	margin-top: 4px;
+}
+.tt-modal-muted {
+	margin-bottom: 20px;
+	font-size: 0.9em;
+	color: var(--text-muted);
+}
+.tt-modal-warning-box {
+	margin-bottom: 16px;
+	padding: 12px;
+	background-color: var(--background-modifier-error);
+	border-radius: 4px;
+	color: var(--text-on-accent);
+}
+.tt-modal-stats {
+	margin-bottom: 20px;
+}
+.tt-modal-list {
+	margin: 0;
+	padding-left: 20px;
+}
+
+.delete-tag-target {
+	font-family: var(--font-monospace);
+}
+
+.taggable-tags-progress-error-info.is-hidden {
+	display: none;
+}
+
+/* Rearrange tags modal */
+.rearrange-tags-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 16px;
+	min-height: 60px;
+	background: var(--background-secondary);
+	border-radius: 8px;
+	margin-bottom: 16px;
+}
+.rearrange-tags-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.rearrange-tag-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 6px 12px;
+	background: var(--interactive-normal);
+	border-radius: 16px;
+	cursor: grab;
+	user-select: none;
+	transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+	font-size: 14px;
+}
+.rearrange-tag-chip:hover:not(.is-dragging) {
+	background: var(--interactive-hover);
+}
+.rearrange-tag-chip.is-dragging {
+	opacity: 0.5;
+	cursor: grabbing;
+}
+.rearrange-tag-chip.is-drop-target {
+	background: var(--interactive-accent);
+	transform: scale(1.05);
+}
+.rearrange-tag-chip .tag-hash {
+	color: var(--text-accent);
+	font-weight: 500;
+}
+.rearrange-tag-chip .drag-handle {
+	opacity: 0.5;
+	margin-left: 4px;
+	display: flex;
+	align-items: center;
+}

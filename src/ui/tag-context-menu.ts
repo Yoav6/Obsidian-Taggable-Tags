@@ -1,10 +1,11 @@
-import { Menu, Modal, Notice, TFile } from 'obsidian';
+import { MarkdownView, Menu, Modal, Notice, TFile } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { renameTag } from '../sync/rename-command';
 import { activateTagExplorerView } from './tag-explorer-view';
 import { showDeleteTagModal } from './delete-tag-modal';
 import { createTagFile } from '../sync/auto-create';
 import { markPluginInitiatedChange } from '../sync/file-rename-sync';
+import { asSubmenuItem, getViewContentEl, rebuildLeafView } from '../utils/obsidian-internals';
 
 function formatTagList(tags: string[]): string {
 	return tags.map(t => `#${t}`).join(', ');
@@ -27,14 +28,14 @@ export function addTagContextMenuItems(
 	menu.addItem((item) => {
 		item.setTitle('Open tag file')
 			.setIcon('file-text')
-			.onClick(async () => {
+			.onClick(() => { void (async () => {
 				const tagFile = plugin.tagIndex.getTagFile(tagName);
 				if (tagFile) {
 					await plugin.app.workspace.getLeaf().openFile(tagFile);
 				} else {
 					new Notice(`No tag file found for #${tagName}`);
 				}
-			});
+			})(); });
 	});
 
 	// Rename tag
@@ -57,24 +58,24 @@ export function addTagContextMenuItems(
 	menu.addItem((item) => {
 		item.setTitle('Filter by tag')
 			.setIcon('filter')
-			.onClick(async () => {
+			.onClick(() => { void (async () => {
 				const explorerView = await activateTagExplorerView(plugin);
 				if (explorerView) {
 					explorerView.setFilterTag(tagName);
 				}
-			});
+			})(); });
 	});
 
 	// Filter out tag (exclude)
 	menu.addItem((item) => {
 		item.setTitle('Filter out tag')
 			.setIcon('filter-x')
-			.onClick(async () => {
+			.onClick(() => { void (async () => {
 				const explorerView = await activateTagExplorerView(plugin);
 				if (explorerView) {
 					explorerView.addExcludeTagPublic(tagName);
 				}
-			});
+			})(); });
 	});
 
 	// Add delete submenu
@@ -96,24 +97,24 @@ export function addNewSubmenu(
 	const multi = tagNames.length > 1;
 
 	menu.addItem((item) => {
-		const submenu = (item as any)
+		const submenu = asSubmenuItem(item)
 			.setTitle('New')
 			.setIcon('plus')
 			.setSubmenu();
 
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle(multi ? 'New file with tags' : 'New file with tag')
 				.setIcon('file-plus')
-				.onClick(async () => {
+				.onClick(() => { void (async () => {
 					await createNewFileWithTags(plugin, tagNames);
 					if (onComplete) onComplete();
-				});
+				})(); });
 		});
 
 		submenu.addSeparator();
 
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle('New child tag')
 				.setIcon('corner-down-right')
@@ -122,7 +123,7 @@ export function addNewSubmenu(
 				});
 		});
 
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle('New parent tag')
 				.setIcon('corner-right-up')
@@ -136,7 +137,7 @@ export function addNewSubmenu(
 			const tagName = tagNames[0];
 			submenu.addSeparator();
 
-			submenu.addItem((subItem: any) => {
+			submenu.addItem((subItem) => {
 				subItem
 					.setTitle('Replace with child tag')
 					.setIcon('arrow-down-right')
@@ -145,7 +146,7 @@ export function addNewSubmenu(
 					});
 			});
 
-			submenu.addItem((subItem: any) => {
+			submenu.addItem((subItem) => {
 				subItem
 					.setTitle('Replace with parent tag')
 					.setIcon('arrow-up-right')
@@ -200,13 +201,13 @@ export function addDeleteTagSubmenu(
 
 	// Create submenu for delete options
 	menu.addItem((item) => {
-		const submenu = (item as any)
+		const submenu = asSubmenuItem(item)
 			.setTitle('Delete tag')
 			.setIcon('trash-2')
 			.setSubmenu();
 
 		// Option 1: Delete file and all instances
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle('Delete file and all instances')
 				.setIcon('file-x')
@@ -216,7 +217,7 @@ export function addDeleteTagSubmenu(
 		});
 
 		// Option 2: Delete tag and exclusive children
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle('Delete tag and exclusive children')
 				.setIcon('git-branch')
@@ -226,7 +227,7 @@ export function addDeleteTagSubmenu(
 		});
 
 		// Option 3: Delete tag and all children
-		submenu.addItem((subItem: any) => {
+		submenu.addItem((subItem) => {
 			subItem
 				.setTitle('Delete tag and all children')
 				.setIcon('trash')
@@ -257,37 +258,31 @@ class RenameTagModal extends Modal {
 		
 		contentEl.createEl('h3', { text: `Rename tag #${this.oldTag}` });
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'rename-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'rename-tag-input-container tt-modal-input-block' });
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			value: this.oldTag,
-			cls: 'rename-tag-input'
+			cls: 'rename-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		this.inputEl.select();
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performRename();
+				void this.performRename();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'rename-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'rename-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const renameBtn = buttonContainer.createEl('button', { text: 'Rename', cls: 'mod-cta' });
-		renameBtn.addEventListener('click', () => this.performRename());
+		renameBtn.addEventListener('click', () => void this.performRename());
 	}
 
 	private async performRename(): Promise<void> {
@@ -319,7 +314,7 @@ class RenameTagModal extends Modal {
 			await renameTag(this.plugin, this.oldTag, newTag);
 			new Notice(`Renamed #${this.oldTag} to #${newTag}`);
 		} catch (error) {
-			new Notice(`Failed to rename tag: ${error}`);
+			new Notice(`Failed to rename tag: ${String(error)}`);
 		}
 	}
 
@@ -353,12 +348,11 @@ async function createNewFileWithTags(plugin: TaggableTagsPlugin, tagNames: strin
 		await leaf.openFile(file);
 		
 		// Focus the inline title and select it after a short delay to ensure the view is ready
-		setTimeout(() => {
-			const view = leaf.view;
-			if (view && (view as any).contentEl) {
-				// Find the inline title element
-				const inlineTitle = (view as any).contentEl.querySelector('.inline-title');
-				if (inlineTitle) {
+		window.setTimeout(() => {
+			const contentEl = getViewContentEl(leaf.view);
+			if (contentEl) {
+				const inlineTitle = contentEl.querySelector('.inline-title');
+				if (inlineTitle instanceof HTMLElement) {
 					// Focus and select all text in the inline title
 					inlineTitle.focus();
 					
@@ -373,7 +367,7 @@ async function createNewFileWithTags(plugin: TaggableTagsPlugin, tagNames: strin
 		}, 100);
 	} catch (error) {
 		console.error('Failed to create file with tag:', error);
-		new Notice(`Failed to create file: ${error}`);
+		new Notice(`Failed to create file: ${String(error)}`);
 	}
 }
 
@@ -404,46 +398,39 @@ class CreateChildTagModal extends Modal {
 		descEl.textContent = multi
 			? 'The new tag will be created with all selected tags in its tags property.'
 			: 'The new tag will be created with the parent tag in its tags property.';
-		descEl.style.marginBottom = '16px';
+		descEl.addClass('tt-modal-desc');
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'create-tag-input-container tt-modal-input-block' });
 		
-		const labelEl = inputContainer.createEl('label');
+		const labelEl = inputContainer.createEl('label', { cls: 'tt-modal-label' });
 		labelEl.textContent = 'New tag name';
-		labelEl.style.display = 'block';
-		labelEl.style.marginBottom = '4px';
+		labelEl.addClass('tt-modal-label');
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			placeholder: 'Enter tag name...',
-			cls: 'create-tag-input'
+			cls: 'create-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performCreate();
+				void this.performCreate();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'create-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'create-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performCreate());
+		createBtn.addEventListener('click', () => void this.performCreate());
 		
 		// Focus the input
-		setTimeout(() => this.inputEl?.focus(), 10);
+		window.setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
 	private async performCreate(): Promise<void> {
@@ -502,7 +489,7 @@ class CreateChildTagModal extends Modal {
 			}
 		} catch (error) {
 			console.error('Failed to create child tag:', error);
-			new Notice(`Failed to create child tag: ${error}`);
+			new Notice(`Failed to create child tag: ${String(error)}`);
 		}
 	}
 
@@ -559,46 +546,39 @@ class CreateParentTagModal extends Modal {
 				? 'Each selected tag will be updated to include the new parent in its tags property.'
 				: 'The original tag will be updated to include the new parent in its tags property.';
 		}
-		descEl.style.marginBottom = '16px';
+		descEl.addClass('tt-modal-desc');
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'create-tag-input-container tt-modal-input-block' });
 		
-		const labelEl = inputContainer.createEl('label');
+		const labelEl = inputContainer.createEl('label', { cls: 'tt-modal-label' });
 		labelEl.textContent = 'New parent tag name';
-		labelEl.style.display = 'block';
-		labelEl.style.marginBottom = '4px';
+		labelEl.addClass('tt-modal-label');
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			placeholder: 'Enter tag name...',
-			cls: 'create-tag-input'
+			cls: 'create-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performCreate();
+				void this.performCreate();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'create-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'create-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performCreate());
+		createBtn.addEventListener('click', () => void this.performCreate());
 		
 		// Focus the input
-		setTimeout(() => this.inputEl?.focus(), 10);
+		window.setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
 	private formatTargets(): string {
@@ -682,7 +662,7 @@ class CreateParentTagModal extends Modal {
 			}
 		} catch (error) {
 			console.error('Failed to create parent tag:', error);
-			new Notice(`Failed to create parent tag: ${error}`);
+			new Notice(`Failed to create parent tag: ${String(error)}`);
 		}
 	}
 
@@ -840,46 +820,39 @@ class ReplaceWithChildTagModal extends Modal {
 		
 		const descEl = contentEl.createEl('p', { cls: 'setting-item-description' });
 		descEl.textContent = `Creates a new tag as a child of #${this.originalTag}, then replaces #${this.originalTag} with the new tag in this file.`;
-		descEl.style.marginBottom = '16px';
+		descEl.addClass('tt-modal-desc');
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'create-tag-input-container tt-modal-input-block' });
 		
-		const labelEl = inputContainer.createEl('label');
+		const labelEl = inputContainer.createEl('label', { cls: 'tt-modal-label' });
 		labelEl.textContent = 'New child tag name';
-		labelEl.style.display = 'block';
-		labelEl.style.marginBottom = '4px';
+		labelEl.addClass('tt-modal-label');
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			placeholder: 'Enter tag name...',
-			cls: 'create-tag-input'
+			cls: 'create-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performReplace();
+				void this.performReplace();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'create-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'create-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Replace', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performReplace());
+		createBtn.addEventListener('click', () => void this.performReplace());
 		
 		// Focus the input
-		setTimeout(() => this.inputEl?.focus(), 10);
+		window.setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
 	private async performReplace(): Promise<void> {
@@ -930,12 +903,12 @@ class ReplaceWithChildTagModal extends Modal {
 			await this.plugin.tagIndex.rebuild();
 			
 			// Refresh the active view to show the updated content
-			refreshActiveView(this.plugin);
+			void refreshActiveView(this.plugin);
 			
 			new Notice(`Replaced #${this.originalTag} with #${newTagName} (child of #${this.originalTag})`);
 		} catch (error) {
 			console.error('Failed to replace with child tag:', error);
-			new Notice(`Failed to replace tag: ${error}`);
+			new Notice(`Failed to replace tag: ${String(error)}`);
 		}
 	}
 
@@ -969,46 +942,39 @@ class ReplaceWithParentTagModal extends Modal {
 		
 		const descEl = contentEl.createEl('p', { cls: 'setting-item-description' });
 		descEl.textContent = `Creates a new tag as a parent of #${this.originalTag}, then replaces #${this.originalTag} with the new tag in this file.`;
-		descEl.style.marginBottom = '16px';
+		descEl.addClass('tt-modal-desc');
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'create-tag-input-container tt-modal-input-block' });
 		
-		const labelEl = inputContainer.createEl('label');
+		const labelEl = inputContainer.createEl('label', { cls: 'tt-modal-label' });
 		labelEl.textContent = 'New parent tag name';
-		labelEl.style.display = 'block';
-		labelEl.style.marginBottom = '4px';
+		labelEl.addClass('tt-modal-label');
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			placeholder: 'Enter tag name...',
-			cls: 'create-tag-input'
+			cls: 'create-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performReplace();
+				void this.performReplace();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'create-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'create-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Replace', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performReplace());
+		createBtn.addEventListener('click', () => void this.performReplace());
 		
 		// Focus the input
-		setTimeout(() => this.inputEl?.focus(), 10);
+		window.setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
 	private async performReplace(): Promise<void> {
@@ -1068,12 +1034,12 @@ class ReplaceWithParentTagModal extends Modal {
 			await this.plugin.tagIndex.rebuild();
 			
 			// Refresh the active view to show the updated content
-			refreshActiveView(this.plugin);
+			void refreshActiveView(this.plugin);
 			
 			new Notice(`Replaced #${this.originalTag} with #${newTagName} (parent of #${this.originalTag})`);
 		} catch (error) {
 			console.error('Failed to replace with parent tag:', error);
-			new Notice(`Failed to replace tag: ${error}`);
+			new Notice(`Failed to replace tag: ${String(error)}`);
 		}
 	}
 
@@ -1088,20 +1054,12 @@ class ReplaceWithParentTagModal extends Modal {
  * This is needed after modifying file content programmatically.
  */
 export async function refreshActiveView(plugin: TaggableTagsPlugin): Promise<void> {
-	const activeLeaf = plugin.app.workspace.activeLeaf;
-	if (!activeLeaf?.view) return;
-	
-	const view = activeLeaf.view;
-	const file = (view as any).file as TFile | undefined;
-	if (!file) return;
-	
-	// Try rebuildView if available (internal Obsidian method)
-	if (typeof (activeLeaf as any).rebuildView === 'function') {
-		await (activeLeaf as any).rebuildView();
+	const view = plugin.app.workspace.getActiveViewOfType(MarkdownView);
+	if (!view?.file) return;
+
+	if (await rebuildLeafView(view.leaf)) {
 		return;
 	}
-	
-	// Fallback: reopen the file in the same leaf (preserves state)
-	const eState = activeLeaf.getEphemeralState();
-	await activeLeaf.openFile(file, { eState });
+
+	await view.leaf.openFile(view.file);
 }

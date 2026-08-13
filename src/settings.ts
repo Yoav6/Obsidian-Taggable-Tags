@@ -1,4 +1,5 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, PluginSettingTab, TFile } from 'obsidian';
+import type { SettingDefinitionItem } from 'obsidian';
 import type TaggableTagsPlugin from './main';
 import { getTagExplorerView } from './ui/tag-explorer-view';
 import { syncEntireVault } from './sync/folder-sync';
@@ -99,395 +100,397 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		// Parent .vertical-tab-content is the scroll container; emptying
-		// containerEl collapses scroll height and jumps to the top.
-		const scrollEl = containerEl.closest('.vertical-tab-content') ?? containerEl.parentElement;
-		const scrollTop = scrollEl?.scrollTop ?? 0;
-
-		containerEl.empty();
-
-		// Tag creation settings (at the top)
-		containerEl.createEl('h3', { text: 'Tag creation' });
-
-		new Setting(containerEl)
-			.setName('Auto-create tag notes')
-			.setDesc('Automatically create tag note files when new tags are used.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.autoCreateFiles)
-				.onChange(async (value) => {
-					this.plugin.settings.autoCreateFiles = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Tag template file')
-			.setDesc('Path to a file to use as a template for new tag files. Leave empty for default content. The template\'s content will be used, and required properties (tag, tags, exception to) will be added if missing.')
-			.addText(text => text
-				.setPlaceholder('e.g., _templates/tag-template.md')
-				.setValue(this.plugin.settings.tagTemplateFile)
-				.onChange(async (value) => {
-					this.plugin.settings.tagTemplateFile = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Use existing files as tags')
-			.setDesc('When creating a tag, if a file with a matching name exists (ignoring case and separators), offer to use it as the tag file.')
-			.addDropdown(dropdown => dropdown
-				.addOption('ask', 'Ask each time')
-				.addOption('auto', 'Automatically use existing file')
-				.addOption('off', 'Always create new file')
-				.setValue(this.plugin.settings.existingFileBehavior)
-				.onChange(async (value) => {
-					this.plugin.settings.existingFileBehavior = value as 'ask' | 'auto' | 'off';
-					await this.plugin.saveSettings();
-				}));
-
-		// Tag names settings
-		containerEl.createEl('h3', { text: 'Tag names' });
-
-		new Setting(containerEl)
-			.setName('Space character in tags')
-			.setDesc('Character used to replace spaces in tag names (property and applied tags). Default is _. Comparisons are always case-insensitive.')
-			.addText(text => text
-				.setPlaceholder('_')
-				.setValue(this.plugin.settings.tagSpaceSeparator)
-				.onChange(async (value) => {
-					this.plugin.settings.tagSpaceSeparator = sanitizeTagSpaceSeparatorInput(value);
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Replace separator characters with spaces in tag note and tag folder names')
-			.setDesc('When on, note and folder names use spaces instead of the tag space character (e.g. Arts_and_Crafts → Arts and Crafts). When off, notes and folders use the same separator as tags.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.replaceSeparatorsWithSpaces)
-				.onChange(async (value) => {
-					this.plugin.settings.replaceSeparatorsWithSpaces = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Sync file names with tag names')
-			.setDesc('When enabled, renaming a tag file will update its tag property, and changing the tag property will rename the file. Respects the separator→spaces setting for note names.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.syncFileNamesWithTags)
-				.onChange(async (value) => {
-					this.plugin.settings.syncFileNamesWithTags = value;
-					await this.plugin.saveSettings();
-				}));
-
-		// Tag file detection settings
-		containerEl.createEl('h3', { text: 'Tag file detection' });
-
-		new Setting(containerEl)
-			.setName('Tag property name')
-			.setDesc('The frontmatter property that identifies a file as a tag file. The property value determines which tag the file represents.')
-			.addText(text => text
-				.setPlaceholder('tag')
-				.setValue(this.plugin.settings.tagPropertyName)
-				.onChange(async (value) => {
-					this.plugin.settings.tagPropertyName = value || 'tag';
-					await this.plugin.saveSettings();
-					await this.plugin.tagIndex.rebuild();
-					this.refreshExplorerView();
-				}));
-
-		new Setting(containerEl)
-			.setName('Exception property name')
-			.setDesc('The frontmatter property that defines which tags this tag is an exception to. Use wikilinks to reference tags (e.g., [[history]]) or "all" for exclusive tags.')
-			.addText(text => text
-				.setPlaceholder('exception to')
-				.setValue(this.plugin.settings.exceptionToPropertyName)
-				.onChange(async (value) => {
-					this.plugin.settings.exceptionToPropertyName = value || 'exception to';
-					await this.plugin.saveSettings();
-					await this.plugin.tagIndex.rebuild();
-					this.refreshExplorerView();
-				}));
-
-		// Explorer view settings
-		containerEl.createEl('h3', { text: 'Tag explorer' });
-
-		new Setting(containerEl)
-			.setName('Combine identical tags in navigation')
-			.setDesc('Tags with exactly the same children (child tags and files) are shown as a single combined item (e.g., "history + fiction").')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.combineIdenticalTags)
-				.onChange(async (value) => {
-					this.plugin.settings.combineIdenticalTags = value;
-					await this.plugin.saveSettings();
-					this.refreshExplorerView();
-				}));
-
-		new Setting(containerEl)
-			.setName('Show untagged files')
-			.setDesc('Display files that have no tags in the explorer view.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.showUntaggedFiles)
-				.onChange(async (value) => {
-					this.plugin.settings.showUntaggedFiles = value;
-					await this.plugin.saveSettings();
-					this.refreshExplorerView();
-					this.display(); // Refresh to show/hide related settings
-				}));
-
-		if (this.plugin.settings.showUntaggedFiles) {
-			new Setting(containerEl)
-				.setName('Group untagged files')
-				.setDesc('Show untagged files in a collapsible "Untagged" group. When off, files appear directly at the bottom of the list.')
-				.addToggle(toggle => toggle
-					.setValue(this.plugin.settings.groupUntaggedFiles)
-					.onChange(async (value) => {
-						this.plugin.settings.groupUntaggedFiles = value;
-						await this.plugin.saveSettings();
-						this.refreshExplorerView();
-					}));
-		}
-
-		new Setting(containerEl)
-			.setName('Display attachments')
-			.setDesc('Show non-markdown files (attachments) in the explorer view.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.displayAttachments)
-				.onChange(async (value) => {
-					this.plugin.settings.displayAttachments = value;
-					await this.plugin.saveSettings();
-					this.refreshExplorerView();
-					this.display(); // Refresh to show/hide related settings
-				}));
-
-		if (this.plugin.settings.displayAttachments) {
-			new Setting(containerEl)
-				.setName('Group attachments')
-				.setDesc('Show attachments in a collapsible "Attachments" group. "Split" divides the group into "Referenced" and "Unreferenced" subgroups.')
-				.addDropdown(dropdown => dropdown
-					.addOption('no', 'No (show directly)')
-					.addOption('yes', 'Yes')
-					.addOption('split', 'Yes, split between referenced and unreferenced')
-					.setValue(this.plugin.settings.attachmentGrouping)
-					.onChange(async (value) => {
-						this.plugin.settings.attachmentGrouping = value as AttachmentGrouping;
-						await this.plugin.saveSettings();
-						this.refreshExplorerView();
-					}));
-
-			new Setting(containerEl)
-				.setName('Display referenced attachments alongside referencing note')
-				.setDesc('Show attachments next to the notes that reference them, in addition to or instead of the vault root.')
-				.addDropdown(dropdown => dropdown
-					.addOption('no', 'No')
-					.addOption('addition', 'Yes, in addition to vault root')
-					.addOption('instead', 'Yes, instead of vault root')
-					.setValue(this.plugin.settings.attachmentsAlongside)
-					.onChange(async (value) => {
-						this.plugin.settings.attachmentsAlongside = value as AttachmentAlongside;
-						await this.plugin.saveSettings();
-						this.refreshExplorerView();
-					}));
-		}
-
-		// Folder synchronization settings
-		containerEl.createEl('h3', { text: 'Folder synchronization' });
-
-		new Setting(containerEl)
-			.setName('Sync folders with tag structure')
-			.setDesc('Mirror the tag hierarchy as a folder structure. Files are placed in folders based on their first tag.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.syncFoldersWithTags)
-				.onChange(async (value) => {
-					this.plugin.settings.syncFoldersWithTags = value;
-					await this.plugin.saveSettings();
-					this.display(); // Refresh to show/hide related settings
-				}));
-
-		if (this.plugin.settings.syncFoldersWithTags) {
-			new Setting(containerEl)
-				.setName('Auto-sync entire vault')
-				.setDesc('Continuously ensure all files are in the correct folders based on their tags. Turn on temporarily to sync existing files, then turn off to only sync on changes.')
-				.addToggle(toggle => toggle
-					.setValue(this.plugin.settings.autoSyncEntireVault)
-					.onChange(async (value) => {
-						this.plugin.settings.autoSyncEntireVault = value;
-						await this.plugin.saveSettings();
-						// Trigger immediate sync when enabled
-						if (value) {
-							await syncEntireVault(this.plugin);
-						}
-					}));
-
-			new Setting(containerEl)
-				.setName('Keep original folder tag when moving files')
-				.setDesc('When moving a file to a new folder, what to do with the tag from the original folder.')
-				.addDropdown(dropdown => dropdown
-					.addOption('ask', 'Ask each time')
-					.addOption('always', 'Always keep')
-					.addOption('never', 'Never keep (remove)')
-					.setValue(this.plugin.settings.keepOriginalFolderTag)
-					.onChange(async (value) => {
-						this.plugin.settings.keepOriginalFolderTag = value as 'ask' | 'always' | 'never';
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(containerEl)
-				.setName('Place tag files in dedicated folder')
-				.setDesc('Store all tag definition files in a single folder instead of distributing them across the tag hierarchy.')
-				.addToggle(toggle => toggle
-					.setValue(this.plugin.settings.tagFilesInDedicatedFolder)
-					.onChange(async (value) => {
-						this.plugin.settings.tagFilesInDedicatedFolder = value;
-						await this.plugin.saveSettings();
-						this.display(); // Refresh to show/hide folder path setting
-					}));
-
-			if (this.plugin.settings.tagFilesInDedicatedFolder) {
-				new Setting(containerEl)
-					.setName('Tag files folder path')
-					.setDesc('Folder path for tag files (e.g., "_tags").')
-					.addText(text => text
-						.setPlaceholder('_tags')
-						.setValue(this.plugin.settings.tagFilesFolderPath)
-						.onChange(async (value) => {
-							this.plugin.settings.tagFilesFolderPath = value || '_tags';
-							await this.plugin.saveSettings();
-						}));
-			}
-
-			new Setting(containerEl)
-				.setName('Excluded tags')
-				.setDesc('Comma-separated list of tags to exclude from folder sync (e.g., "todo, done, status").')
-				.addText(text => text
-					.setPlaceholder('todo, done, status')
-					.setValue(this.plugin.settings.excludedTagsFromFolderSync.join(', '))
-					.onChange(async (value) => {
-						this.plugin.settings.excludedTagsFromFolderSync = value
-							.split(',')
-							.map(t => t.trim())
-							.filter(t => t.length > 0);
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(containerEl)
-				.setName('Excluded folders')
-				.setDesc('Comma-separated list of folder paths to exclude from folder sync (e.g., "templates, attachments").')
-				.addText(text => text
-					.setPlaceholder('templates, attachments')
-					.setValue(this.plugin.settings.excludedFoldersFromSync.join(', '))
-					.onChange(async (value) => {
-						this.plugin.settings.excludedFoldersFromSync = value
-							.split(',')
-							.map(f => f.trim())
-							.filter(f => f.length > 0);
-						await this.plugin.saveSettings();
-					}));
-
-			new Setting(containerEl)
-				.setName('Empty folder behavior')
-				.setDesc('What to do with folders that become empty after files are moved during sync.')
-				.addDropdown(dropdown => dropdown
-					.addOption('nothing', 'Do nothing')
-					.addOption('delete', 'Delete empty folders')
-					.addOption('create-tag', 'Create tag note for empty folders')
-					.addOption('ask', 'Ask each time')
-					.setValue(this.plugin.settings.emptyFolderBehavior)
-					.onChange(async (value) => {
-						this.plugin.settings.emptyFolderBehavior = value as EmptyFolderBehavior;
-						await this.plugin.saveSettings();
-					}));
-		}
-
-		// Tag registry settings
-		containerEl.createEl('h3', { text: 'Tag registry' });
-
-		const registryDesc = document.createDocumentFragment();
-		registryDesc.appendText('Maintain a hidden note that lists all tags from tag files in its frontmatter. ');
-		registryDesc.appendText('This makes tags appear in Obsidian\'s autocomplete suggestions even if they aren\'t used in any note yet.');
-
-		new Setting(containerEl)
-			.setName('Enable tag registry note')
-			.setDesc(registryDesc)
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.enableTagRegistry)
-				.onChange(async (value) => {
-					this.plugin.settings.enableTagRegistry = value;
-					await this.plugin.saveSettings();
-					if (value) {
-						await this.plugin.updateTagRegistry();
-					}
-					refreshGraphLeaves(this.plugin);
-					this.display(); // Refresh to show/hide path setting
-				}));
-
-		if (this.plugin.settings.enableTagRegistry) {
-			new Setting(containerEl)
-				.setName('Registry note path')
-				.setDesc('Path to the tag registry note (e.g., "_tag-registry.md"). The note will be created automatically.')
-				.addText(text => text
-					.setPlaceholder('_tag-registry.md')
-					.setValue(this.plugin.settings.tagRegistryPath)
-					.onChange(async (value) => {
-						this.plugin.settings.tagRegistryPath = value || '_tag-registry.md';
-						await this.plugin.saveSettings();
-						await this.plugin.updateTagRegistry();
-						refreshGraphLeaves(this.plugin);
-					}));
-		}
-
-		// Misc settings (at the bottom)
-		containerEl.createEl('h3', { text: 'Misc' });
-
-		new Setting(containerEl)
-			.setName('Remove redundant tags')
-			.setDesc('Automatically remove redundant tags: parent tags when a child is present (e.g., remove "cooking" if "recipes" exists and is a child of cooking), and self-tags from tag files (e.g., remove #music from music.md).')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.removeRedundantParentTags)
-				.onChange(async (value) => {
-					this.plugin.settings.removeRedundantParentTags = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Tag click action')
-			.setDesc('What happens when you click a tag in a note (in properties or body).')
-			.addDropdown(dropdown => dropdown
-				.addOption('replace', 'Filter in explorer (replace current filters)')
-				.addOption('add', 'Filter in explorer (add to current filters)')
-				.addOption('default', 'Default Obsidian behavior (open search)')
-				.setValue(this.plugin.settings.tagClickBehavior)
-				.onChange(async (value) => {
-					this.plugin.settings.tagClickBehavior = value as 'replace' | 'add' | 'default';
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Suggest deletion when tag becomes unused')
-			.setDesc('Show a modal when a tag is no longer used anywhere.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.confirmUnusedTagDeletion)
-				.onChange(async (value) => {
-					this.plugin.settings.confirmUnusedTagDeletion = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Graph view compatibility')
-			.setDesc('Merge tag nodes into their tag notes in Obsidian\'s graph view, show tag hierarchy edges, and style tag notes with the theme\'s tag color. The tag registry note is always hidden from the graph. Uses internal Obsidian APIs and may need updates after Obsidian upgrades.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.graphCompatEnabled)
-				.onChange(async (value) => {
-					this.plugin.settings.graphCompatEnabled = value;
-					await this.plugin.saveSettings();
-					refreshGraphLeaves(this.plugin);
-				}));
-
-		if (scrollEl) {
-			// Restore after layout so the rebuilt content has a real scroll height.
-			requestAnimationFrame(() => {
-				scrollEl.scrollTop = scrollTop;
-			});
-		}
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			{
+				type: 'group',
+				heading: 'Tag creation',
+				items: [
+					{
+						name: 'Auto-create tag notes',
+						desc: 'Automatically create tag note files when new tags are used.',
+						control: { type: 'toggle', key: 'autoCreateFiles' },
+					},
+					{
+						name: 'Tag template file',
+						desc: 'Path to a file to use as a template for new tag files. Leave empty for default content. The template\'s content will be used, and required properties (tag, tags, exception to) will be added if missing.',
+						control: {
+							type: 'file',
+							key: 'tagTemplateFile',
+							placeholder: 'e.g., _templates/tag-template.md',
+							filter: (file: TFile) => file.extension === 'md',
+						},
+					},
+					{
+						name: 'Use existing files as tags',
+						desc: 'When creating a tag, if a file with a matching name exists (ignoring case and separators), offer to use it as the tag file.',
+						control: {
+							type: 'dropdown',
+							key: 'existingFileBehavior',
+							options: {
+								ask: 'Ask each time',
+								auto: 'Automatically use existing file',
+								off: 'Always create new file',
+							},
+						},
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Tag names',
+				items: [
+					{
+						name: 'Space character in tags',
+						desc: 'Character used to replace spaces in tag names (property and applied tags). Default is _. Comparisons are always case-insensitive.',
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('_')
+								.setValue(this.plugin.settings.tagSpaceSeparator)
+								.onChange(async (value) => {
+									this.plugin.settings.tagSpaceSeparator = sanitizeTagSpaceSeparatorInput(value);
+									await this.plugin.saveSettings();
+								}));
+						},
+					},
+					{
+						name: 'Replace separator characters with spaces in tag note and tag folder names',
+						desc: 'When on, note and folder names use spaces instead of the tag space character (e.g. Arts_and_crafts → arts and crafts). When off, notes and folders use the same separator as tags.',
+						control: { type: 'toggle', key: 'replaceSeparatorsWithSpaces' },
+					},
+					{
+						name: 'Sync file names with tag names',
+						desc: 'When enabled, renaming a tag file will update its tag property, and changing the tag property will rename the file. Respects the separator→spaces setting for note names.',
+						control: { type: 'toggle', key: 'syncFileNamesWithTags' },
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Tag file detection',
+				items: [
+					{
+						name: 'Tag property name',
+						desc: 'The frontmatter property that identifies a file as a tag file. The property value determines which tag the file represents.',
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('tag')
+								.setValue(this.plugin.settings.tagPropertyName)
+								.onChange(async (value) => {
+									this.plugin.settings.tagPropertyName = value || 'tag';
+									await this.plugin.saveSettings();
+									await this.plugin.tagIndex.rebuild();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+					{
+						name: 'Exception property name',
+						desc: 'The frontmatter property that defines which tags this tag is an exception to. Use wikilinks to reference tags (e.g., [[history]]) or "all" for exclusive tags.',
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('exception to')
+								.setValue(this.plugin.settings.exceptionToPropertyName)
+								.onChange(async (value) => {
+									this.plugin.settings.exceptionToPropertyName = value || 'exception to';
+									await this.plugin.saveSettings();
+									await this.plugin.tagIndex.rebuild();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Tag explorer',
+				items: [
+					{
+						name: 'Combine identical tags in navigation',
+						desc: 'Tags with exactly the same children (child tags and files) are shown as a single combined item (e.g., "history + fiction").',
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.combineIdenticalTags)
+								.onChange(async (value) => {
+									this.plugin.settings.combineIdenticalTags = value;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+					{
+						name: 'Show untagged files',
+						desc: 'Display files that have no tags in the explorer view.',
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.showUntaggedFiles)
+								.onChange(async (value) => {
+									this.plugin.settings.showUntaggedFiles = value;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+									this.refreshDomState();
+								}));
+						},
+					},
+					{
+						name: 'Group untagged files',
+						desc: 'Show untagged files in a collapsible "untagged" group. When off, files appear directly at the bottom of the list.',
+						visible: () => this.plugin.settings.showUntaggedFiles,
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.groupUntaggedFiles)
+								.onChange(async (value) => {
+									this.plugin.settings.groupUntaggedFiles = value;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+					{
+						name: 'Display attachments',
+						desc: 'Show non-markdown files (attachments) in the explorer view.',
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.displayAttachments)
+								.onChange(async (value) => {
+									this.plugin.settings.displayAttachments = value;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+									this.refreshDomState();
+								}));
+						},
+					},
+					{
+						name: 'Group attachments',
+						desc: 'Show attachments in a collapsible "attachments" group. "split" divides the group into "referenced" and "unreferenced" subgroups.',
+						visible: () => this.plugin.settings.displayAttachments,
+						render: (setting) => {
+							setting.addDropdown(dropdown => dropdown
+								.addOption('no', 'No (show directly)')
+								.addOption('yes', 'Yes')
+								.addOption('split', 'Yes, split between referenced and unreferenced')
+								.setValue(this.plugin.settings.attachmentGrouping)
+								.onChange(async (value) => {
+									this.plugin.settings.attachmentGrouping = value as AttachmentGrouping;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+					{
+						name: 'Display referenced attachments alongside referencing note',
+						desc: 'Show attachments next to the notes that reference them, in addition to or instead of the vault root.',
+						visible: () => this.plugin.settings.displayAttachments,
+						render: (setting) => {
+							setting.addDropdown(dropdown => dropdown
+								.addOption('no', 'No')
+								.addOption('addition', 'Yes, in addition to vault root')
+								.addOption('instead', 'Yes, instead of vault root')
+								.setValue(this.plugin.settings.attachmentsAlongside)
+								.onChange(async (value) => {
+									this.plugin.settings.attachmentsAlongside = value as AttachmentAlongside;
+									await this.plugin.saveSettings();
+									this.refreshExplorerView();
+								}));
+						},
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Folder synchronization',
+				items: [
+					{
+						name: 'Sync folders with tag structure',
+						desc: 'Mirror the tag hierarchy as a folder structure. Files are placed in folders based on their first tag.',
+						control: { type: 'toggle', key: 'syncFoldersWithTags' },
+					},
+					{
+						name: 'Auto-sync entire vault',
+						desc: 'Continuously ensure all files are in the correct folders based on their tags. Turn on temporarily to sync existing files, then turn off to only sync on changes.',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.autoSyncEntireVault)
+								.onChange(async (value) => {
+									this.plugin.settings.autoSyncEntireVault = value;
+									await this.plugin.saveSettings();
+									if (value) {
+										await syncEntireVault(this.plugin);
+									}
+								}));
+						},
+					},
+					{
+						name: 'Keep original folder tag when moving files',
+						desc: 'When moving a file to a new folder, what to do with the tag from the original folder.',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						control: {
+							type: 'dropdown',
+							key: 'keepOriginalFolderTag',
+							options: {
+								ask: 'Ask each time',
+								always: 'Always keep',
+								never: 'Never keep (remove)',
+							},
+						},
+					},
+					{
+						name: 'Place tag files in dedicated folder',
+						desc: 'Store all tag definition files in a single folder instead of distributing them across the tag hierarchy.',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						control: { type: 'toggle', key: 'tagFilesInDedicatedFolder' },
+					},
+					{
+						name: 'Tag files folder path',
+						desc: 'Folder path for tag files (e.g., "_tags").',
+						visible: () => this.plugin.settings.syncFoldersWithTags && this.plugin.settings.tagFilesInDedicatedFolder,
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('_tags')
+								.setValue(this.plugin.settings.tagFilesFolderPath)
+								.onChange(async (value) => {
+									this.plugin.settings.tagFilesFolderPath = value || '_tags';
+									await this.plugin.saveSettings();
+								}));
+						},
+					},
+					{
+						name: 'Excluded tags',
+						desc: 'Comma-separated list of tags to exclude from folder sync (e.g., "todo, done, status").',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('todo, done, status')
+								.setValue(this.plugin.settings.excludedTagsFromFolderSync.join(', '))
+								.onChange(async (value) => {
+									this.plugin.settings.excludedTagsFromFolderSync = value
+										.split(',')
+										.map(t => t.trim())
+										.filter(t => t.length > 0);
+									await this.plugin.saveSettings();
+								}));
+						},
+					},
+					{
+						name: 'Excluded folders',
+						desc: 'Comma-separated list of folder paths to exclude from folder sync (e.g., "templates, attachments").',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('templates, attachments')
+								.setValue(this.plugin.settings.excludedFoldersFromSync.join(', '))
+								.onChange(async (value) => {
+									this.plugin.settings.excludedFoldersFromSync = value
+										.split(',')
+										.map(f => f.trim())
+										.filter(f => f.length > 0);
+									await this.plugin.saveSettings();
+								}));
+						},
+					},
+					{
+						name: 'Empty folder behavior',
+						desc: 'What to do with folders that become empty after files are moved during sync.',
+						visible: () => this.plugin.settings.syncFoldersWithTags,
+						control: {
+							type: 'dropdown',
+							key: 'emptyFolderBehavior',
+							options: {
+								nothing: 'Do nothing',
+								delete: 'Delete empty folders',
+								'create-tag': 'Create tag note for empty folders',
+								ask: 'Ask each time',
+							},
+						},
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Tag registry',
+				items: [
+					{
+						name: 'Enable tag registry note',
+						desc: createFragment((frag) => {
+							frag.appendText('Maintain a hidden note that lists all tags from tag files in its frontmatter. ');
+							frag.appendText('This makes tags appear in Obsidian\'s autocomplete suggestions even if they aren\'t used in any note yet.');
+						}),
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.enableTagRegistry)
+								.onChange(async (value) => {
+									this.plugin.settings.enableTagRegistry = value;
+									await this.plugin.saveSettings();
+									if (value) {
+										await this.plugin.updateTagRegistry();
+									}
+									refreshGraphLeaves(this.plugin);
+									this.refreshDomState();
+								}));
+						},
+					},
+					{
+						name: 'Registry note path',
+						desc: 'Path to the tag registry note (e.g., "_tag-registry.md"). The note will be created automatically.',
+						visible: () => this.plugin.settings.enableTagRegistry,
+						render: (setting) => {
+							setting.addText(text => text
+								.setPlaceholder('_tag-registry.md')
+								.setValue(this.plugin.settings.tagRegistryPath)
+								.onChange(async (value) => {
+									this.plugin.settings.tagRegistryPath = value || '_tag-registry.md';
+									await this.plugin.saveSettings();
+									await this.plugin.updateTagRegistry();
+									refreshGraphLeaves(this.plugin);
+								}));
+						},
+					},
+				],
+			},
+			{
+				type: 'group',
+				heading: 'Misc',
+				items: [
+					{
+						name: 'Remove redundant tags',
+						desc: 'Automatically remove redundant tags: parent tags when a child is present (e.g., remove "cooking" if "recipes" exists and is a child of cooking), and self-tags from tag files (e.g., remove #music from music.md).',
+						control: { type: 'toggle', key: 'removeRedundantParentTags' },
+					},
+					{
+						name: 'Tag click action',
+						desc: 'What happens when you click a tag in a note (in properties or body).',
+						control: {
+							type: 'dropdown',
+							key: 'tagClickBehavior',
+							options: {
+								replace: 'Filter in explorer (replace current filters)',
+								add: 'Filter in explorer (add to current filters)',
+								default: 'Default Obsidian behavior (open search)',
+							},
+						},
+					},
+					{
+						name: 'Suggest deletion when tag becomes unused',
+						desc: 'Show a modal when a tag is no longer used anywhere.',
+						control: { type: 'toggle', key: 'confirmUnusedTagDeletion' },
+					},
+					{
+						name: 'Graph view compatibility',
+						desc: 'Merge tag nodes into their tag notes in Obsidian\'s graph view, show tag hierarchy edges, and style tag notes with the theme\'s tag color. The tag registry note is always hidden from the graph. Uses internal Obsidian apis and may need updates after Obsidian upgrades.',
+						render: (setting) => {
+							setting.addToggle(toggle => toggle
+								.setValue(this.plugin.settings.graphCompatEnabled)
+								.onChange(async (value) => {
+									this.plugin.settings.graphCompatEnabled = value;
+									await this.plugin.saveSettings();
+									refreshGraphLeaves(this.plugin);
+								}));
+						},
+					},
+				],
+			},
+		];
 	}
 
 	/**
@@ -496,7 +499,7 @@ export class TaggableTagsSettingTab extends PluginSettingTab {
 	private refreshExplorerView(): void {
 		const explorerView = getTagExplorerView(this.plugin);
 		if (explorerView) {
-			explorerView.refresh();
+			void explorerView.refresh();
 		}
 	}
 }

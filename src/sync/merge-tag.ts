@@ -3,6 +3,7 @@ import type TaggableTagsPlugin from '../main';
 import { createTagFile } from './auto-create';
 import { replaceTagEverywhere, markPluginInitiatedChange } from './file-rename-sync';
 import { parseFrontmatter, serializeFrontmatter } from '../utils/tag-template';
+import { processFrontmatterRecord } from '../utils/frontmatter';
 import { filterSafeParentTags } from '../utils/cycle-prevention';
 import type { PlanOp } from '../migration/plan';
 
@@ -49,7 +50,7 @@ export async function mergeTags(
 
 	if (removedFile) {
 		markPluginInitiatedChange(removedFile.path);
-		await plugin.app.vault.delete(removedFile);
+		await plugin.app.fileManager.trashFile(removedFile);
 	}
 
 	await plugin.tagIndex.rebuild();
@@ -137,8 +138,8 @@ function collectParentTagsFromFrontmatter(
 	removed: string,
 	parentTags: Set<string>
 ): void {
-	if (!fm || !Array.isArray(fm.tags)) return;
-	for (const tag of fm.tags) {
+	if (!fm || !Array.isArray(fm['tags'])) return;
+	for (const tag of fm['tags']) {
 		if (typeof tag !== 'string') continue;
 		const normalized = plugin.tagIndex.normalizeTag(tag);
 		if (!plugin.tagIndex.tagsMatch(normalized, survivor) && !plugin.tagIndex.tagsMatch(normalized, removed)) {
@@ -147,14 +148,18 @@ function collectParentTagsFromFrontmatter(
 	}
 }
 
+function isUnknownArray(value: unknown): value is unknown[] {
+	return Array.isArray(value);
+}
+
 function clonePropertyValue(value: unknown): unknown {
-	if (Array.isArray(value)) return [...value];
+	if (isUnknownArray(value)) return value.slice();
 	return value;
 }
 
 function mergePropertyValues(existing: unknown, incoming: unknown): unknown {
-	if (Array.isArray(existing) && Array.isArray(incoming)) {
-		const merged = [...existing];
+	if (isUnknownArray(existing) && isUnknownArray(incoming)) {
+		const merged = existing.slice();
 		for (const item of incoming) {
 			if (!merged.some(existingItem => JSON.stringify(existingItem) === JSON.stringify(item))) {
 				merged.push(item);
@@ -184,18 +189,18 @@ async function dedupeTagInFile(plugin: TaggableTagsPlugin, file: TFile, tag: str
 	markPluginInitiatedChange(file.path);
 
 	// Touch only the tags property; other frontmatter is none of this pass's business.
-	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-		if (!Array.isArray(fm.tags)) return;
+	await processFrontmatterRecord(plugin.app, file, (fm) => {
+		if (!Array.isArray(fm['tags'])) return;
 
 		const deduped: string[] = [];
-		for (const entry of fm.tags) {
+		for (const entry of fm['tags']) {
 			if (typeof entry !== 'string') continue;
 			if (deduped.some(existing => plugin.tagIndex.tagsMatch(existing, entry))) continue;
 			deduped.push(entry);
 		}
 
-		if (deduped.length === fm.tags.length) return;
-		fm.tags = deduped;
+		if (deduped.length === fm['tags'].length) return;
+		fm['tags'] = deduped;
 		changed = true;
 	});
 
@@ -251,7 +256,7 @@ export async function performMergeTags(
 		new Notice(`Merged #${plugin.tagIndex.normalizeTag(removedTag)} into #${plugin.tagIndex.normalizeTag(survivorTag)}`);
 	} catch (error) {
 		console.error('Failed to merge tags:', error);
-		new Notice(`Failed to merge tags: ${error}`);
+		new Notice(`Failed to merge tags: ${String(error)}`);
 		throw error;
 	}
 }

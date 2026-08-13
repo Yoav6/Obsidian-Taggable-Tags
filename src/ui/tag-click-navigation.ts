@@ -1,4 +1,4 @@
-import { Keymap } from 'obsidian';
+import { Menu } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { activateTagExplorerView } from './tag-explorer-view';
 import { addTagContextMenuItems } from './tag-context-menu';
@@ -37,7 +37,7 @@ export function setupTagClickNavigation(plugin: TaggableTagsPlugin): void {
 			
 			const tagFile = plugin.tagIndex.getTagFile(propertyTagInfo.tagName);
 			if (tagFile) {
-				plugin.app.workspace.getLeaf('tab').openFile(tagFile);
+				void plugin.app.workspace.getLeaf('tab').openFile(tagFile);
 			}
 			return;
 		}
@@ -59,7 +59,7 @@ export function setupTagClickNavigation(plugin: TaggableTagsPlugin): void {
 		event.stopImmediatePropagation();
 
 		// Handle the tag click asynchronously
-		handleTagFilter(plugin, propertyTagInfo.tagName, behavior);
+		void handleTagFilter(plugin, propertyTagInfo.tagName, behavior);
 	}, true); // Use capture phase
 
 	// Also prevent the click event from firing on property tags we handled
@@ -77,7 +77,7 @@ export function setupTagClickNavigation(plugin: TaggableTagsPlugin): void {
 	}, true);
 
 	// Handle clicks on tags in reading view and editor (these work fine with click events)
-	plugin.registerDomEvent(document, 'click', async (event: MouseEvent) => {
+	plugin.registerDomEvent(document, 'click', (event: MouseEvent) => { void (async () => {
 		const target = event.target as HTMLElement;
 		
 		// Check if the target is a tag element (not property tags - those are handled above)
@@ -124,7 +124,7 @@ export function setupTagClickNavigation(plugin: TaggableTagsPlugin): void {
 
 		// Handle the tag filter
 		await handleTagFilter(plugin, tagName, behavior);
-	}, true); // Use capture phase to intercept before Obsidian's handler
+	})(); }, true); // Use capture phase to intercept before Obsidian's handler
 
 	// Add items to the editor context menu when right-clicking on a tag
 	plugin.registerEvent(
@@ -151,21 +151,19 @@ export function setupTagClickNavigation(plugin: TaggableTagsPlugin): void {
 			const tagName = propertyTagInfo.tagName;
 			// Get the current file from the active view
 			const activeFile = plugin.app.workspace.getActiveFile();
-			const { Menu } = require('obsidian');
-			const originalForEvent = (Menu as any).forEvent;
+			const originalForEvent = Menu.forEvent.bind(Menu);
 			
-			(Menu as any).forEvent = function(e: Event) {
-				const menu = originalForEvent.call(this, e);
+			Menu.forEvent = ((e: PointerEvent | MouseEvent) => {
+				const menu = originalForEvent(e);
 				if (e === event) {
 					addTagContextMenuItems(plugin, menu, tagName, activeFile ?? undefined);
-					(Menu as any).forEvent = originalForEvent;
+					Menu.forEvent = originalForEvent;
 				}
 				return menu;
-			};
+			});
 			
-			// Safety cleanup in case forEvent isn't called
-			setTimeout(() => {
-				(Menu as any).forEvent = originalForEvent;
+			window.setTimeout(() => {
+				Menu.forEvent = originalForEvent;
 			}, 0);
 		}
 	}, true);
@@ -195,8 +193,8 @@ async function handleTagFilter(plugin: TaggableTagsPlugin, tagName: string, beha
 function getPropertyTagInfo(target: HTMLElement): { tagName: string } | null {
 	// Check if it's within a tags property
 	// The structure is: .metadata-property[data-property-key="tags"] > ... > .multi-select-pill > .multi-select-pill-content
-	const pillContent = target.closest('.multi-select-pill-content') as HTMLElement | null;
-	const pill = target.closest('.multi-select-pill') as HTMLElement | null;
+	const pillContent = target.closest('.multi-select-pill-content');
+	const pill = target.closest('.multi-select-pill');
 	
 	// Check if we're clicking on the pill content or the pill itself (but not the remove button)
 	const isOnPillContent = pillContent !== null;

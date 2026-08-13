@@ -168,7 +168,7 @@ export async function deleteEmptyFolders(plugin: TaggableTagsPlugin, ignoredFold
 			// Check if folder is empty
 			if (folder.children.length === 0) {
 				try {
-					await plugin.app.vault.delete(folder);
+					await plugin.app.fileManager.trashFile(folder);
 					deletedCount++;
 					changed = true;
 				} catch (error) {

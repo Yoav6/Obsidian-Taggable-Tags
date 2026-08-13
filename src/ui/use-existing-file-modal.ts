@@ -35,39 +35,26 @@ export class UseExistingFileModal extends Modal {
 		contentEl.createEl('h2', { text: 'Use existing file as tag?' });
 
 		// Description
-		const descEl = contentEl.createEl('p');
-		descEl.style.marginBottom = '16px';
+		const descEl = contentEl.createEl('p', { cls: 'tt-modal-desc' });
 		descEl.setText(`A file with a similar name already exists. Would you like to use it as the tag file for #${this.tagName}?`);
 
 		// File info
-		const fileInfo = contentEl.createEl('div');
-		fileInfo.style.marginBottom = '16px';
-		fileInfo.style.padding = '8px 12px';
-		fileInfo.style.backgroundColor = 'var(--background-secondary)';
-		fileInfo.style.borderRadius = '4px';
+		const fileInfo = contentEl.createDiv({ cls: 'tt-modal-info-panel' });
 		
-		fileInfo.createEl('div', { 
+		fileInfo.createDiv({ 
 			text: `Existing file: ${this.existingFile.path}`,
 			cls: 'setting-item-name'
 		});
 		
-		const tagDisplay = fileInfo.createEl('div');
-		tagDisplay.style.fontFamily = 'var(--font-monospace)';
-		tagDisplay.style.marginTop = '4px';
-		tagDisplay.createEl('span', { text: `Tag: #${this.tagName}` });
+		const tagDisplay = fileInfo.createDiv({ cls: 'tt-modal-mono' });
+		tagDisplay.createSpan({ text: `Tag: #${this.tagName}` });
 
 		// Info about what happens
-		const infoEl = contentEl.createEl('p');
-		infoEl.style.marginBottom = '20px';
-		infoEl.style.fontSize = '0.9em';
-		infoEl.style.color = 'var(--text-muted)';
+		const infoEl = contentEl.createEl('p', { cls: 'tt-modal-muted' });
 		infoEl.setText('If you use the existing file, the required tag properties will be added to its frontmatter.');
 
 		// Buttons
-		const buttonContainer = contentEl.createEl('div');
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'tt-modal-buttons' });
 
 		const createNewBtn = buttonContainer.createEl('button', { text: 'Create new file' });
 		createNewBtn.addEventListener('click', () => {

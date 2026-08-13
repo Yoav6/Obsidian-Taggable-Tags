@@ -118,7 +118,7 @@ export async function createTagFile(plugin: TaggableTagsPlugin, tag: string): Pr
 		plugin.tagIndex.onTagFileCreated(file, normalizedTag);
 		
 		return file;
-	} catch (error) {
+	} catch {
 		return null;
 	}
 }

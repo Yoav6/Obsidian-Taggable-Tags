@@ -77,7 +77,7 @@ export function setupFileRenameSync(plugin: TaggableTagsPlugin): void {
 					new Notice(`Renamed tag #${currentTag} to #${normalizedNewTag}`);
 					} catch (error) {
 						console.error('Failed to sync tag rename:', error);
-						new Notice(`Failed to sync tag rename: ${error}`);
+						new Notice(`Failed to sync tag rename: ${String(error)}`);
 					}
 				}
 			}
@@ -177,7 +177,7 @@ export function setupFileRenameSync(plugin: TaggableTagsPlugin): void {
 					new Notice(`Renamed tag #${normalizedPrevious} to #${normalizedCurrent}`);
 				} catch (error) {
 					console.error('Failed to sync tag rename:', error);
-					new Notice(`Failed to sync tag rename: ${error}`);
+					new Notice(`Failed to sync tag rename: ${String(error)}`);
 				}
 			}
 		})
@@ -208,7 +208,7 @@ export function markPluginInitiatedChange(path: string): void {
 	pluginInitiatedChanges.add(path);
 	// Clean up after a short delay - metadata cache events fire within ~100ms,
 	// so 500ms is plenty of buffer while not blocking subsequent user changes.
-	setTimeout(() => {
+	window.setTimeout(() => {
 		pluginInitiatedChanges.delete(path);
 	}, 500);
 }
@@ -278,8 +278,6 @@ export async function replaceTagEverywhere(
 	const app = plugin.app;
 	const files = app.vault.getMarkdownFiles();
 	
-	let filesUpdated = 0;
-
 	for (const file of files) {
 		// Skip the file that triggered the change (its property was already updated)
 		if (excludeFile && file.path === excludeFile.path) {
@@ -287,10 +285,7 @@ export async function replaceTagEverywhere(
 		}
 		
 		// Replace in all files (including other tag files for parent/child references)
-		const updated = await replaceTagInFile(plugin, file, oldTag, newTag);
-		if (updated) {
-			filesUpdated++;
-		}
+		await replaceTagInFile(plugin, file, oldTag, newTag);
 	}
 
 }

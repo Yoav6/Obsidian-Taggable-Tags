@@ -35,32 +35,22 @@ export class KeepFolderTagModal extends Modal {
 		contentEl.createEl('h2', { text: 'Keep original folder tag?' });
 
 		// File info
-		const fileInfo = contentEl.createEl('div');
-		fileInfo.style.marginBottom = '16px';
-		fileInfo.style.padding = '8px 12px';
-		fileInfo.style.backgroundColor = 'var(--background-secondary)';
-		fileInfo.style.borderRadius = '4px';
+		const fileInfo = contentEl.createDiv({ cls: 'tt-modal-info-panel' });
 		
-		fileInfo.createEl('div', { 
+		fileInfo.createDiv({ 
 			text: `File: ${this.file.basename}`,
 			cls: 'setting-item-name'
 		});
 		
-		const tagDisplay = fileInfo.createEl('div');
-		tagDisplay.style.fontFamily = 'var(--font-monospace)';
-		tagDisplay.style.marginTop = '4px';
-		tagDisplay.createEl('span', { text: `Tag: #${this.tagName}` });
+		const tagDisplay = fileInfo.createDiv({ cls: 'tt-modal-mono' });
+		tagDisplay.createSpan({ text: `Tag: #${this.tagName}` });
 
 		// Description
-		const descEl = contentEl.createEl('p');
-		descEl.style.marginBottom = '20px';
+		const descEl = contentEl.createEl('p', { cls: 'tt-modal-muted' });
 		descEl.setText('This file was moved to a new folder. Would you like to keep the tag from the original folder, or remove it?');
 
 		// Buttons
-		const buttonContainer = contentEl.createEl('div');
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'tt-modal-buttons' });
 
 		const removeBtn = buttonContainer.createEl('button', { text: 'Remove tag' });
 		removeBtn.addEventListener('click', () => {

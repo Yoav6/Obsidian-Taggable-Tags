@@ -155,7 +155,7 @@ class CircularTagsModal extends Modal {
 		// Warning
 		const warningDiv = contentEl.createDiv({ cls: 'taggable-tags-warning' });
 		warningDiv.createEl('p', {
-			text: 'Circular relationships occur when tags form a loop in their parent-child hierarchy (e.g., A → B → C → A).',
+			text: 'Circular relationships occur when tags form a loop in their parent-child hierarchy (e.g., a → b → c → a).',
 		});
 
 		// List all circular tags
@@ -175,7 +175,7 @@ class CircularTagsModal extends Modal {
 				});
 				link.addEventListener('click', (e) => {
 					e.preventDefault();
-					this.app.workspace.openLinkText(tagFile.path, '', false);
+					void this.app.workspace.openLinkText(tagFile.path, '', false);
 					this.close();
 				});
 			} else {

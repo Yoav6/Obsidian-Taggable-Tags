@@ -9,7 +9,6 @@ import {
 import {
 	buildResolvedConflictMap,
 	getResolvedTagName,
-	getSourceVaultPath,
 	parentTagForSource,
 	type ConflictResolution,
 	type NamingConflict,
@@ -751,12 +750,13 @@ function planRedundantTagRemoval(plugin: TaggableTagsPlugin, model: VaultModel, 
 		const tags = model.getAllTagsFromFile(file.path);
 		const toRemove: string[] = [];
 
-		if (file.tagName) {
+		const tagName = file.tagName;
+		if (tagName) {
 			// On a tag note the tags list *is* the parent list, so every entry looks
 			// redundant to the ancestor check below. Only the self tag comes off —
 			// flatten adds one whenever the note carried its own nested tag.
-			if (tags.some(t => model.tagsMatch(t, file.tagName!))) {
-				toRemove.push(file.tagName!);
+			if (tags.some(t => model.tagsMatch(t, tagName))) {
+				toRemove.push(tagName);
 			}
 		} else if (tags.length >= 2) {
 			for (const tag of tags) {

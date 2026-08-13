@@ -7,8 +7,8 @@ const GRAPH_VIEW_TYPES = ['graph', 'localgraph'] as const;
 
 function isGraphLeaf(leaf: unknown): leaf is GraphLeaf {
 	if (!leaf || typeof leaf !== 'object') return false;
-	const view = (leaf as GraphLeaf).view;
-	return !!view && typeof view === 'object' && typeof (view as GraphLeaf['view']).unload === 'function';
+	const view = (leaf as { view?: { unload?: unknown } }).view;
+	return !!view && typeof view === 'object' && typeof view.unload === 'function';
 }
 
 function getGraphLeaves(plugin: TaggableTagsPlugin): GraphLeaf[] {

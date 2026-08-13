@@ -1,5 +1,6 @@
 import { TFile, TFolder } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { processFrontmatterRecord, readFrontmatterTags } from '../utils/frontmatter';
 import { findMatchingFileInFolder, namesMatch } from '../utils/name-matching';
 import { joinTagNameSegments, toComparisonKey } from '../utils/tag-naming';
 import {
@@ -264,15 +265,10 @@ function collectNestedTags(
 		if (!cache) continue;
 		
 		// Check frontmatter tags
-		if (cache.frontmatter?.tags) {
-			const fmTags = cache.frontmatter.tags;
-			if (Array.isArray(fmTags)) {
-				for (const tag of fmTags) {
-					if (typeof tag === 'string' && tag.includes('/') && !seenNestedTags.has(tag)) {
-						seenNestedTags.add(tag);
-						addNestedTagSource(plugin, sourcesByName, tag);
-					}
-				}
+		for (const tag of readFrontmatterTags(cache)) {
+			if (tag.includes('/') && !seenNestedTags.has(tag)) {
+				seenNestedTags.add(tag);
+				addNestedTagSource(plugin, sourcesByName, tag);
 			}
 		}
 		
@@ -800,7 +796,7 @@ async function renameTagFile(
 ): Promise<boolean> {
 	// First update the tag property
 	try {
-		await plugin.app.fileManager.processFrontMatter(file, (fm) => {
+		await processFrontmatterRecord(plugin.app, file, (fm) => {
 			fm[plugin.settings.tagPropertyName] = newTagName;
 		});
 	} catch (error) {

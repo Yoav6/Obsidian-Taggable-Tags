@@ -68,7 +68,7 @@ export class UnusedTagModal extends Modal {
 			.setDesc('Delete the tag file permanently')
 			.addButton(button => button
 				.setButtonText('Delete')
-				.setWarning()
+				.setDestructive()
 				.onClick(() => {
 					this.resolve({ action: 'delete' });
 					this.close();

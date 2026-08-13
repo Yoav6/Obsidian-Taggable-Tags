@@ -1,4 +1,4 @@
-import { TFile, normalizePath } from 'obsidian';
+import { normalizePath } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 import { updateTagProperty, replaceTagEverywhere, markPluginInitiatedChange } from './file-rename-sync';
 
@@ -42,5 +42,4 @@ export async function renameTag(plugin: TaggableTagsPlugin, oldTag: string, newT
 	// Rebuild the index
 	await plugin.tagIndex.rebuild();
 
-	console.log(`Renamed tag #${oldTag} to #${normalizedNewTag}`);
 }

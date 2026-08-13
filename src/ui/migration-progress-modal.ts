@@ -1,4 +1,4 @@
-import { ButtonComponent, Modal } from 'obsidian';
+import { ButtonComponent, Modal, TFile } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
 
 /**
@@ -137,8 +137,7 @@ export class MigrationProgressModal extends Modal {
 		this.renderSteps();
 
 		// Error info container (hidden by default, shown at the end if there are errors)
-		this.errorInfoContainer = contentEl.createDiv({ cls: 'taggable-tags-progress-error-info' });
-		this.errorInfoContainer.style.display = 'none';
+		this.errorInfoContainer = contentEl.createDiv({ cls: 'taggable-tags-progress-error-info is-hidden' });
 
 		// Button container
 		const buttonContainer = contentEl.createDiv({ cls: 'taggable-tags-button-container' });
@@ -201,7 +200,7 @@ export class MigrationProgressModal extends Modal {
 
 		// Show error info when complete with errors
 		if (this.errorInfoContainer && this.isComplete && this.errors.length > 0 && this.errorNotePath) {
-			this.errorInfoContainer.style.display = 'block';
+			this.errorInfoContainer.removeClass('is-hidden');
 			this.errorInfoContainer.empty();
 			
 			this.errorInfoContainer.createEl('p', { 
@@ -216,8 +215,8 @@ export class MigrationProgressModal extends Modal {
 			link.addEventListener('click', (e) => {
 				e.preventDefault();
 				const file = this.plugin.app.vault.getAbstractFileByPath(this.errorNotePath!);
-				if (file) {
-					this.plugin.app.workspace.getLeaf().openFile(file as any);
+				if (file instanceof TFile) {
+					void this.plugin.app.workspace.getLeaf().openFile(file);
 				}
 			});
 			

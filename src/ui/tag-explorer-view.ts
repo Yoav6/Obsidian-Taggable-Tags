@@ -6,6 +6,7 @@ import { markPluginInitiatedChange } from '../sync/file-rename-sync';
 import { removeTagFromFile } from '../sync/delete-tag';
 import { addDeleteTagSubmenu, addNewSubmenu, addNewParentTagMenuItem } from './tag-context-menu';
 import { MergeTagsModal } from './merge-tags-modal';
+import { executeCommandById, getMenuItems, openGlobalSearch, queryHtmlElement } from '../utils/obsidian-internals';
 
 export const TAG_EXPLORER_VIEW_TYPE = 'taggable-tags-explorer';
 
@@ -29,7 +30,7 @@ interface ExplorerRow {
 	render: (container: HTMLElement) => void;
 }
 
-/** Row height in pixels. Must match .virtual-row in the injected styles. */
+/** Row height in pixels. Must match .virtual-row in styles.css. */
 const ROW_HEIGHT = 26;
 
 /** Rows rendered above and below the viewport, to cover fast scrolling. */
@@ -56,8 +57,6 @@ export class TagExplorerView extends ItemView {
 	private excludeTags: Set<string> = new Set();
 	// After refresh, put the cursor back in the filter textbox
 	private focusFilterInputAfterRefresh = false;
-	// Style element (kept outside contentEl so it persists across refreshes)
-	private styleEl: HTMLStyleElement | null = null;
 	// View mode: tree (hierarchical) or list (flat)
 	private viewMode: 'tree' | 'list' = 'tree';
 	// Content mode: what to show in the view
@@ -121,13 +120,15 @@ export class TagExplorerView extends ItemView {
 		if (pipeIndex !== -1) {
 			const instanceKey = key.slice(0, pipeIndex);
 			const path = key.slice(pipeIndex + 1);
-			return this.contentEl.querySelector(
+			return queryHtmlElement(
+				this.contentEl,
 				`[data-instance-key="${CSS.escape(instanceKey)}"][data-path="${CSS.escape(path)}"]`
-			) as HTMLElement | null;
+			);
 		}
-		return this.contentEl.querySelector(
+		return queryHtmlElement(
+			this.contentEl,
 			`[data-instance-key="${CSS.escape(key)}"]`
-		) as HTMLElement | null;
+		);
 	}
 
 	/** All selectable rows in visual order, including those scrolled out of the window. */
@@ -260,26 +261,26 @@ export class TagExplorerView extends ItemView {
 						.onClick(() => {
 							new MergeTagsModal(this.plugin, tagA, tagB, () => {
 								this.clearSelection();
-								this.refresh();
+								void this.refresh();
 							}).open();
 						});
 				});
 			}
-			addNewSubmenu(this.plugin, menu, selectedTags, () => this.refresh());
+			addNewSubmenu(this.plugin, menu, selectedTags, () => { void this.refresh(); });
 		} else {
 			const files = this.getSelectedNonTagFiles();
 			if (files) {
 				const app = this.plugin.app;
-				menu.addItem((item: any) => {
+				menu.addItem((item) => {
 					item.setTitle('Delete')
 						.setIcon('trash')
 						.setWarning(true)
-						.onClick(async () => {
+						.onClick(() => { void (async () => {
 							for (const file of files) {
 								await app.fileManager.trashFile(file);
 							}
 							this.clearSelection();
-						});
+						})(); });
 				});
 			} else {
 				const mixed = this.getSelectedMixedTagsAndFiles();
@@ -291,15 +292,15 @@ export class TagExplorerView extends ItemView {
 						mixed.files,
 						() => {
 							this.clearSelection();
-							this.refresh();
+							void this.refresh();
 						}
 					);
 				}
 			}
 		}
 
-		// @ts-ignore — Menu.items is internal
-		if (menu.items?.length === 0) return;
+		const menuItems = getMenuItems(menu);
+		if (menuItems?.length === 0) return;
 		menu.showAtMouseEvent(event);
 	}
 
@@ -431,7 +432,7 @@ export class TagExplorerView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return 'Tag Explorer';
+		return 'Tag explorer';
 	}
 
 	getIcon(): string {
@@ -464,9 +465,6 @@ export class TagExplorerView extends ItemView {
 		this.contentEl = this.containerEl.children[1] as HTMLElement;
 		this.contentEl.empty();
 		this.contentEl.addClass('taggable-tags-explorer');
-
-		// Add styles to containerEl (not contentEl) so they persist across refreshes
-		this.addStyles();
 
 		// Render the tree
 		await this.refresh();
@@ -522,7 +520,7 @@ export class TagExplorerView extends ItemView {
 			window.clearTimeout(this.refreshTimeout);
 		}
 		this.refreshTimeout = window.setTimeout(() => {
-			this.refresh();
+			void this.refresh();
 		}, 500);
 	}
 
@@ -548,15 +546,15 @@ export class TagExplorerView extends ItemView {
 		this.renderRowWindow = null;
 
 		// Create fixed header container that wraps both nav-header and filter-bar
-		const fixedHeader = this.contentEl.createEl('div', { cls: 'fixed-header' });
+		const fixedHeader = this.contentEl.createDiv({ cls: 'fixed-header' });
 
 		// Create header with buttons
-		const header = fixedHeader.createEl('div', { cls: 'nav-header' });
-		const headerButtons = header.createEl('div', { cls: 'nav-buttons-container' });
+		const header = fixedHeader.createDiv({ cls: 'nav-header' });
+		const headerButtons = header.createDiv({ cls: 'nav-buttons-container' });
 		
 		// Toggle expand/collapse button
 		const hasExpanded = this.expandedPaths.size > 0;
-		const toggleBtn = headerButtons.createEl('div', { 
+		const toggleBtn = headerButtons.createDiv({ 
 			cls: 'clickable-icon nav-action-button', 
 			attr: { 'aria-label': hasExpanded ? 'Collapse all' : 'Expand all' } 
 		});
@@ -572,31 +570,31 @@ export class TagExplorerView extends ItemView {
 		});
 
 		// New note button
-		const newNoteBtn = headerButtons.createEl('div', { 
+		const newNoteBtn = headerButtons.createDiv({ 
 			cls: 'clickable-icon nav-action-button', 
 			attr: { 'aria-label': 'New note' } 
 		});
 		setIcon(newNoteBtn, 'file-plus');
 		newNoteBtn.addEventListener('click', () => {
 			// Trigger Obsidian's default new file command
-			(this.plugin.app as any).commands.executeCommandById('file-explorer:new-file');
+			executeCommandById(this.plugin.app, 'file-explorer:new-file');
 		});
 
 		// New tag button
-		const newTagBtn = headerButtons.createEl('div', { 
+		const newTagBtn = headerButtons.createDiv({ 
 			cls: 'clickable-icon nav-action-button', 
 			attr: { 'aria-label': 'New tag' } 
 		});
 		setIcon(newTagBtn, 'tag');
 		newTagBtn.addEventListener('click', () => {
-			new CreateTagModal(this.plugin, () => this.refresh()).open();
+			new CreateTagModal(this.plugin, () => { void this.refresh(); }).open();
 		});
 
 		// Tree/List view mode toggle
 		// In files-only mode with tree view: disabled (grayed out) since files are always flat
 		// In files-only mode with list view: clicking switches to tags-and-files mode (tree view)
 		const isFilesOnlyTreeMode = this.contentMode === 'files' && this.viewMode === 'tree';
-		const viewModeBtn = headerButtons.createEl('div', { 
+		const viewModeBtn = headerButtons.createDiv({ 
 			cls: `clickable-icon nav-action-button${isFilesOnlyTreeMode ? ' is-disabled' : ''}`, 
 			attr: { 'aria-label': isFilesOnlyTreeMode ? 'Tree view not available in files-only mode' : (this.viewMode === 'tree' ? 'Switch to list view' : 'Switch to tree view') } 
 		});
@@ -615,7 +613,7 @@ export class TagExplorerView extends ItemView {
 		}
 
 		// Content mode toggle (tags+files / only tags / only files)
-		const contentModeBtn = headerButtons.createEl('div', { 
+		const contentModeBtn = headerButtons.createDiv({ 
 			cls: 'clickable-icon nav-action-button', 
 			attr: { 'aria-label': this.getContentModeLabel() } 
 		});
@@ -633,20 +631,20 @@ export class TagExplorerView extends ItemView {
 		});
 
 		// Reveal / cycle active file instances
-		const revealBtn = headerButtons.createEl('div', {
+		const revealBtn = headerButtons.createDiv({
 			cls: 'clickable-icon nav-action-button',
 			attr: { 'aria-label': 'Reveal active file' }
 		});
 		setIcon(revealBtn, 'crosshair');
 		revealBtn.addEventListener('click', () => {
-			this.revealNextActiveFileInstance();
+			void this.revealNextActiveFileInstance();
 		});
 
 		// Render filter bar inside the fixed header
 		this.renderFilterBar(fixedHeader);
 
 		// Create scrollable content area
-		const scrollContainer = this.contentEl.createEl('div', { cls: 'scroll-container' });
+		const scrollContainer = this.contentEl.createDiv({ cls: 'scroll-container' });
 
 		// Get tags to display (filtered or all root tags)
 		const tagsToRender = this.getFilteredTags();
@@ -744,18 +742,18 @@ export class TagExplorerView extends ItemView {
 		if (rows.length === 0) {
 			// Render empty state outside the tree to avoid hover/click issues
 			if (this.filterTags.size > 0) {
-				scrollContainer.createEl('div', { 
+				scrollContainer.createDiv({ 
 					text: 'No items match all selected filters.',
 					cls: 'empty-state'
 				});
 			} else {
-				scrollContainer.createEl('div', { 
+				scrollContainer.createDiv({ 
 					text: 'No tags found. Create a tag in any file to get started.',
 					cls: 'empty-state'
 				});
 			}
 		} else {
-			const treeContainer = scrollContainer.createEl('div', { cls: 'nav-files-container node-insert-event' });
+			const treeContainer = scrollContainer.createDiv({ cls: 'nav-files-container node-insert-event' });
 			this.mountRowWindow(scrollContainer, treeContainer, rows);
 		}
 
@@ -780,9 +778,9 @@ export class TagExplorerView extends ItemView {
 	 * viewport exist as DOM nodes.
 	 */
 	private mountRowWindow(scrollContainer: HTMLElement, treeContainer: HTMLElement, rows: ExplorerRow[]): void {
-		const spacer = treeContainer.createEl('div', { cls: 'virtual-list-spacer' });
-		const windowEl = treeContainer.createEl('div', { cls: 'virtual-list-window' });
-		spacer.style.height = `${rows.length * ROW_HEIGHT}px`;
+		const spacer = treeContainer.createDiv({ cls: 'virtual-list-spacer' });
+		const windowEl = treeContainer.createDiv({ cls: 'virtual-list-window' });
+		spacer.setCssProps({ '--tt-spacer-height': `${rows.length * ROW_HEIGHT}px` });
 
 		let lastStart = -1;
 		let lastEnd = -1;
@@ -796,10 +794,10 @@ export class TagExplorerView extends ItemView {
 			lastStart = start;
 			lastEnd = end;
 
-			windowEl.style.top = `${start * ROW_HEIGHT}px`;
+			windowEl.setCssProps({ '--tt-window-top': `${start * ROW_HEIGHT}px` });
 			windowEl.empty();
 			for (let i = start; i < end; i++) {
-				const rowEl = windowEl.createEl('div', { cls: 'virtual-row' });
+				const rowEl = windowEl.createDiv({ cls: 'virtual-row' });
 				rows[i].render(rowEl);
 			}
 			this.applySelectionStyles();
@@ -808,7 +806,7 @@ export class TagExplorerView extends ItemView {
 		this.renderRowWindow = renderWindow;
 		scrollContainer.addEventListener('scroll', renderWindow, { passive: true });
 		renderWindow();
-		requestAnimationFrame(renderWindow);
+		window.requestAnimationFrame(renderWindow);
 	}
 
 	private paintVisibleRows(): void {
@@ -919,13 +917,13 @@ export class TagExplorerView extends ItemView {
 	private renderFlatTagNode(container: HTMLElement, tag: string): void {
 		const hasTagFile = this.plugin.tagIndex.getTagFile(tag) !== null;
 		
-		const tagItem = container.createEl('div', { 
+		const tagItem = container.createDiv({ 
 			cls: `tree-item nav-folder is-collapsed${!hasTagFile ? ' tag-no-file' : ''}`
 		});
 		
 		this.tagElements.set(tag, tagItem);
 
-		const tagTitle = tagItem.createEl('div', { 
+		const tagTitle = tagItem.createDiv({ 
 			cls: 'tree-item-self is-clickable tag-item list-mode-item',
 			attr: { 
 				'data-tag': tag,
@@ -934,15 +932,15 @@ export class TagExplorerView extends ItemView {
 		});
 
 		// Tag icon (replaces the expand/collapse arrow in list mode)
-		const tagIcon = tagTitle.createEl('div', { cls: 'list-mode-icon' });
+		const tagIcon = tagTitle.createDiv({ cls: 'list-mode-icon' });
 		setIcon(tagIcon, 'tag');
 
 		// Tag name container
-		const tagNameContainer = tagTitle.createEl('span', { cls: 'tag-name' });
+		const tagNameContainer = tagTitle.createSpan({ cls: 'tag-name' });
 		tagNameContainer.textContent = tag;
 		
 		// Left click on name opens the file (Ctrl+click opens in new tab)
-		tagNameContainer.addEventListener('click', async (e) => {
+		tagNameContainer.addEventListener('click', (e) => { void (async () => {
 			e.stopPropagation();
 			if (this.handleSelectionClick(e, tagTitle)) return;
 			const tagFile = this.plugin.tagIndex.getTagFile(tag);
@@ -952,7 +950,7 @@ export class TagExplorerView extends ItemView {
 					: this.plugin.app.workspace.getLeaf();
 				await leaf.openFile(tagFile);
 			}
-		});
+		})(); });
 
 		// Right click shows context menu
 		tagTitle.addEventListener('contextmenu', (e) => {
@@ -1060,33 +1058,34 @@ export class TagExplorerView extends ItemView {
 		const primaryTag = group.tags[0];
 
 		// Create the tag item
-		const tagItem = container.createEl('div', { 
+		const tagItem = container.createDiv({ 
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}${!hasChildren ? ' is-collapsed' : ''}${applyParentNoFile ? ' tag-no-file' : ''}`
 		});
 
-		const tagTitle = tagItem.createEl('div', { 
+		const tagTitle = tagItem.createDiv({ 
 			cls: 'tree-item-self is-clickable tag-item',
 			attr: { 
 				'data-tag': group.tags.join(','),
 				'data-instance-key': `tag:${treePath}`
 			}
 		});
-		tagTitle.style.paddingLeft = `${depth * 12 + 4}px`;
+		tagTitle.addClass('tt-indent');
+		tagTitle.setCssProps({ '--tt-indent': `${depth * 12 + 4}px` });
 
 		// Expand/collapse arrow
-		const expandIcon = tagTitle.createEl('div', { 
+		const expandIcon = tagTitle.createDiv({ 
 			cls: 'nav-folder-collapse-indicator collapse-icon' 
 		});
 		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
 
 		// Tag name container
-		const tagNameContainer = tagTitle.createEl('span', { cls: 'tag-name' });
+		const tagNameContainer = tagTitle.createSpan({ cls: 'tag-name' });
 		
 		if (group.tags.length === 1) {
 			// Single tag - simple clickable name
 			tagNameContainer.textContent = group.displayName;
 			// Left click on name opens the file (Ctrl+click opens in new tab)
-			tagNameContainer.addEventListener('click', async (e) => {
+			tagNameContainer.addEventListener('click', (e) => { void (async () => {
 				e.stopPropagation();
 				if (this.handleSelectionClick(e, tagTitle)) return;
 				const tagFile = this.plugin.tagIndex.getTagFile(primaryTag);
@@ -1096,22 +1095,22 @@ export class TagExplorerView extends ItemView {
 						: this.plugin.app.workspace.getLeaf();
 					await leaf.openFile(tagFile);
 				}
-			});
+			})(); });
 			// Right click on name shows full context menu (handled by tagTitle contextmenu)
 		} else {
 			// Combined tags - each tag is individually clickable
 			group.tags.forEach((tag, index) => {
 				if (index > 0) {
-					tagNameContainer.createEl('span', { text: ' + ', cls: 'tag-name-separator' });
+					tagNameContainer.createSpan({ text: ' + ', cls: 'tag-name-separator' });
 				}
 				// Check if this specific tag has a file
 				const tagHasFile = this.plugin.tagIndex.getTagFile(tag) !== null;
-				const tagSpan = tagNameContainer.createEl('span', { 
+				const tagSpan = tagNameContainer.createSpan({ 
 					text: tag, 
 					cls: `tag-name-part${!tagHasFile ? ' tag-name-no-file' : ''}`
 				});
 				// Left click on tag name opens its file (Ctrl+click opens in new tab)
-				tagSpan.addEventListener('click', async (e) => {
+				tagSpan.addEventListener('click', (e) => { void (async () => {
 					e.stopPropagation();
 					if (this.handleSelectionClick(e, tagTitle)) return;
 					const tagFile = this.plugin.tagIndex.getTagFile(tag);
@@ -1121,7 +1120,7 @@ export class TagExplorerView extends ItemView {
 							: this.plugin.app.workspace.getLeaf();
 						await leaf.openFile(tagFile);
 					}
-				});
+				})(); });
 				// Right click on tag name shows its full context menu
 				tagSpan.addEventListener('contextmenu', (e) => {
 					if (this.handleSelectionContextMenu(e, tagTitle)) return;
@@ -1166,9 +1165,9 @@ export class TagExplorerView extends ItemView {
 	}
 
 	private renderFileNode(container: HTMLElement, file: TFile, depth: number, listMode: boolean = false, instanceKey: string = 'file:__flat__'): void {
-		const fileItem = container.createEl('div', { cls: 'tree-item nav-file' });
+		const fileItem = container.createDiv({ cls: 'tree-item nav-file' });
 		
-		const fileTitle = fileItem.createEl('div', { 
+		const fileTitle = fileItem.createDiv({ 
 			cls: `tree-item-self is-clickable file-item${listMode ? ' list-mode-item' : ''}`,
 			attr: { 
 				'data-path': file.path,
@@ -1178,32 +1177,36 @@ export class TagExplorerView extends ItemView {
 		
 		if (listMode) {
 			// List mode - add file icon, no extra padding
-			const fileIcon = fileTitle.createEl('div', { cls: 'list-mode-icon' });
+			const fileIcon = fileTitle.createDiv({ cls: 'list-mode-icon' });
 			setIcon(fileIcon, 'file');
 		} else {
-			// Tree mode - indent to align with tag names (after the arrow)
-			fileTitle.style.paddingLeft = `${depth * 12 + 8}px`;
+			// Same indent as tags at this depth, plus a spacer the width of the
+			// collapse chevron so the file name lines up with tag names (one step
+			// to the right of the parent label).
+			fileTitle.addClass('tt-indent');
+			fileTitle.setCssProps({ '--tt-indent': `${depth * 12 + 4}px` });
+			fileTitle.createDiv({ cls: 'file-indent-spacer' });
 		}
 
 		// File name
-		const fileName = fileTitle.createEl('span', { cls: 'file-name' });
+		const fileName = fileTitle.createSpan({ cls: 'file-name' });
 		fileName.textContent = file.basename;
 
 		// Show the file format on the right for non-markdown files (like Obsidian's file explorer)
 		if (file.extension !== 'md') {
-			const fileTag = fileTitle.createEl('span', { cls: 'nav-file-tag' });
+			const fileTag = fileTitle.createSpan({ cls: 'nav-file-tag' });
 			fileTag.textContent = file.extension.toUpperCase();
 		}
 
 		// Click to open file (Ctrl+click opens in new tab)
-		fileTitle.addEventListener('click', async (e) => {
+		fileTitle.addEventListener('click', (e) => { void (async () => {
 			e.stopPropagation();
 			if (this.handleSelectionClick(e, fileTitle)) return;
 			const leaf = e.ctrlKey || e.metaKey
 				? this.plugin.app.workspace.getLeaf('tab')
 				: this.plugin.app.workspace.getLeaf();
 			await leaf.openFile(file);
-		});
+		})(); });
 
 		// Context menu
 		fileTitle.addEventListener('contextmenu', (e) => {
@@ -1242,23 +1245,24 @@ export class TagExplorerView extends ItemView {
 		const UNTAGGED_KEY = '__untagged__';
 
 		// Create the untagged item
-		const untaggedItem = container.createEl('div', { 
+		const untaggedItem = container.createDiv({ 
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
 		});
 
-		const untaggedTitle = untaggedItem.createEl('div', { 
+		const untaggedTitle = untaggedItem.createDiv({ 
 			cls: 'tree-item-self is-clickable tag-item untagged-item',
 		});
-		untaggedTitle.style.paddingLeft = '4px';
+		untaggedTitle.addClass('tt-indent');
+		untaggedTitle.setCssProps({ '--tt-indent': '4px' });
 
 		// Expand/collapse arrow
-		const expandIcon = untaggedTitle.createEl('div', { 
+		const expandIcon = untaggedTitle.createDiv({ 
 			cls: 'nav-folder-collapse-indicator collapse-icon' 
 		});
 		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
 
 		// "Untagged" label
-		const label = untaggedTitle.createEl('span', { cls: 'tag-name untagged-label' });
+		const label = untaggedTitle.createSpan({ cls: 'tag-name untagged-label' });
 		label.textContent = 'Untagged';
 
 		// Click handler for expand/collapse
@@ -1441,21 +1445,22 @@ export class TagExplorerView extends ItemView {
 		isExpanded: boolean,
 		variant: 'attachment-group' | 'attachment-subgroup'
 	): void {
-		const item = container.createEl('div', {
+		const item = container.createDiv({
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
 		});
 
-		const title = item.createEl('div', {
+		const title = item.createDiv({
 			cls: `tree-item-self is-clickable tag-item ${variant}-item`,
 		});
-		title.style.paddingLeft = `${depth * 12 + 4}px`;
+		title.addClass('tt-indent');
+		title.setCssProps({ '--tt-indent': `${depth * 12 + 4}px` });
 
-		const expandIcon = title.createEl('div', {
+		const expandIcon = title.createDiv({
 			cls: 'nav-folder-collapse-indicator collapse-icon'
 		});
 		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
 
-		const label = title.createEl('span', { cls: `tag-name ${variant}-label` });
+		const label = title.createSpan({ cls: `tag-name ${variant}-label` });
 		label.textContent = labelText;
 
 		title.addEventListener('click', (e) => {
@@ -1470,20 +1475,20 @@ export class TagExplorerView extends ItemView {
 	}
 
 	private showTagContextMenu(event: MouseEvent, tag: string, ancestors: string[] = []): void {
-		const menu = new (require('obsidian').Menu)();
+		const menu = new Menu();
 		const tagFile = this.plugin.tagIndex.getTagFile(tag);
 		
 		if (tagFile) {
 			// Tag has a file - show normal options
-			menu.addItem((item: any) => {
+			menu.addItem((item) => {
 				item.setTitle('Open tag file')
 					.setIcon('file-text')
-					.onClick(async () => {
+					.onClick(() => { void (async () => {
 						await this.plugin.app.workspace.getLeaf().openFile(tagFile);
-					});
+					})(); });
 			});
 
-			menu.addItem((item: any) => {
+			menu.addItem((item) => {
 				item.setTitle('Rename tag')
 					.setIcon('pencil')
 					.onClick(() => {
@@ -1492,31 +1497,31 @@ export class TagExplorerView extends ItemView {
 			});
 		} else {
 			// Tag has no file - show create/delete options
-			menu.addItem((item: any) => {
+			menu.addItem((item) => {
 				item.setTitle('Create tag file')
 					.setIcon('file-plus')
-					.onClick(async () => {
+					.onClick(() => { void (async () => {
 						const newFile = await createTagFile(this.plugin, tag);
 						if (newFile) {
 							new Notice(`Created tag file for #${tag}`);
-							this.refresh();
+							void this.refresh();
 						}
-					});
+					})(); });
 			});
 
-			menu.addItem((item: any) => {
+			menu.addItem((item) => {
 				item.setTitle('Delete all tag instances')
 					.setIcon('trash-2')
-					.onClick(async () => {
+					.onClick(() => { void (async () => {
 						await this.deleteAllTagInstances(tag);
-					});
+					})(); });
 			});
 		}
 
 		menu.addSeparator();
 
 		// Add "New" submenu (new file with tag, child tag, parent tag)
-		addNewSubmenu(this.plugin, menu, [tag], () => this.refresh());
+		addNewSubmenu(this.plugin, menu, [tag], () => { void this.refresh(); });
 
 		menu.addSeparator();
 
@@ -1524,7 +1529,7 @@ export class TagExplorerView extends ItemView {
 		const parentTags = this.plugin.tagIndex.getParentTags(tag);
 		if (parentTags.length > 0) {
 			const menuTitle = parentTags.length > 1 ? 'Split tag' : 'Merge tag into parent';
-			menu.addItem((item: any) => {
+			menu.addItem((item) => {
 				item.setTitle(menuTitle)
 					.setIcon('git-branch')
 					.onClick(() => {
@@ -1538,7 +1543,7 @@ export class TagExplorerView extends ItemView {
 		menu.addSeparator();
 
 		// Filter options
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Filter by tag')
 				.setIcon('filter')
 				.onClick(() => {
@@ -1546,7 +1551,7 @@ export class TagExplorerView extends ItemView {
 				});
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Filter out tag')
 				.setIcon('filter-x')
 				.onClick(() => {
@@ -1556,26 +1561,26 @@ export class TagExplorerView extends ItemView {
 
 		menu.addSeparator();
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Expand all children')
 				.setIcon('chevrons-up-down')
 				.onClick(() => {
 					this.expandTagRecursively(tag, ancestors);
-					this.refresh();
+					void this.refresh();
 				});
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Collapse all children')
 				.setIcon('chevrons-down-up')
 				.onClick(() => {
 					this.collapseTagRecursively(tag, ancestors);
-					this.refresh();
+					void this.refresh();
 				});
 		});
 
 		// Add delete submenu
-		addDeleteTagSubmenu(this.plugin, menu, tag, () => this.refresh());
+		addDeleteTagSubmenu(this.plugin, menu, tag, () => { void this.refresh(); });
 
 		menu.showAtMouseEvent(event);
 	}
@@ -1584,27 +1589,27 @@ export class TagExplorerView extends ItemView {
 	 * Show a context menu with only collapse/expand options (for combined tags)
 	 */
 	private showCollapseExpandMenu(event: MouseEvent, tags: string[], ancestors: string[] = []): void {
-		const menu = new (require('obsidian').Menu)();
+		const menu = new Menu();
 		
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Expand all children')
 				.setIcon('chevrons-up-down')
 				.onClick(() => {
 					for (const tag of tags) {
 						this.expandTagRecursively(tag, ancestors);
 					}
-					this.refresh();
+					void this.refresh();
 				});
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Collapse all children')
 				.setIcon('chevrons-down-up')
 				.onClick(() => {
 					for (const tag of tags) {
 						this.collapseTagRecursively(tag, ancestors);
 					}
-					this.refresh();
+					void this.refresh();
 				});
 		});
 
@@ -1612,33 +1617,33 @@ export class TagExplorerView extends ItemView {
 	}
 
 	private showFileContextMenu(event: MouseEvent, file: TFile): void {
-		const menu = new (require('obsidian').Menu)();
+		const menu = new Menu();
 		const app = this.plugin.app;
 		
 		// === Section 1: Open actions ===
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Open in new tab')
 				.setIcon('file-plus')
-				.onClick(async () => {
+				.onClick(() => { void (async () => {
 					await app.workspace.getLeaf('tab').openFile(file);
-				});
+				})(); });
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Open to the right')
 				.setIcon('separator-vertical')
-				.onClick(async () => {
+				.onClick(() => { void (async () => {
 					await app.workspace.getLeaf('split').openFile(file);
-				});
+				})(); });
 		});
 
 		menu.addSeparator();
 
 		// === Section 2: File actions ===
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Make a copy')
 				.setIcon('documents')
-				.onClick(async () => {
+				.onClick(() => { void (async () => {
 					const dir = file.parent?.path || '';
 					const baseName = file.basename;
 					const ext = file.extension;
@@ -1651,10 +1656,10 @@ export class TagExplorerView extends ItemView {
 					}
 					const content = await app.vault.read(file);
 					await app.vault.create(newPath, content);
-				});
+				})(); });
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Rename...')
 				.setIcon('pencil')
 				.onClick(() => {
@@ -1662,13 +1667,13 @@ export class TagExplorerView extends ItemView {
 				});
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Delete')
 				.setIcon('trash')
 				.setWarning(true)
-				.onClick(async () => {
-					await app.vault.trash(file, true);
-				});
+				.onClick(() => { void (async () => {
+					await app.fileManager.trashFile(file);
+				})(); });
 		});
 
 		menu.addSeparator();
@@ -1676,9 +1681,7 @@ export class TagExplorerView extends ItemView {
 		// === Section 3: Let plugins add their items (Open in default app, Copy path, Bookmark, etc.) ===
 		app.workspace.trigger('file-menu', menu, file, 'file-explorer');
 
-		// Remove duplicate items that we've already added or don't want
-		// @ts-ignore - accessing internal menu items
-		const items = menu.items;
+		const items = getMenuItems(menu);
 		if (items) {
 			const titlesToRemove = [
 				'Open in new window',      // Duplicate
@@ -1688,7 +1691,6 @@ export class TagExplorerView extends ItemView {
 			];
 			for (let i = items.length - 1; i >= 0; i--) {
 				const item = items[i];
-				// @ts-ignore - accessing internal item properties
 				const title = item.titleEl?.textContent || item.title || '';
 				if (titlesToRemove.includes(title)) {
 					items.splice(i, 1);
@@ -1719,10 +1721,11 @@ export class TagExplorerView extends ItemView {
 		const originalName = file.basename;
 		
 		// Create input element
-		const input = document.createElement('input');
-		input.type = 'text';
+		const input = (fileNameEl as HTMLElement).createEl('input', {
+			type: 'text',
+			cls: 'rename-input',
+		});
 		input.value = originalName;
-		input.className = 'rename-input';
 		this.activeRenameInput = input;
 		
 		// Replace text with input
@@ -1752,7 +1755,7 @@ export class TagExplorerView extends ItemView {
 				} catch (e) {
 					// Restore original name on error
 					fileNameEl.textContent = originalName;
-					new Notice(`Failed to rename: ${e.message || e}`);
+					new Notice(`Failed to rename: ${e instanceof Error ? e.message : String(e)}`);
 				}
 			} else {
 				// Restore original display
@@ -1764,15 +1767,15 @@ export class TagExplorerView extends ItemView {
 			if (e.key === 'Enter') {
 				e.preventDefault();
 				e.stopPropagation();
-				finishRename(true);
+				void finishRename(true);
 			} else if (e.key === 'Escape') {
 				e.preventDefault();
 				e.stopPropagation();
-				finishRename(false);
+				void finishRename(false);
 			}
 		});
 		
-		input.addEventListener('blur', () => finishRename(true));
+		input.addEventListener('blur', () => void finishRename(true));
 	}
 
 	private expandTagRecursively(tag: string, ancestors: string[], visited: Set<string> = new Set()): void {
@@ -2040,7 +2043,7 @@ export class TagExplorerView extends ItemView {
 			? `${instanceKey}|${filePath}`
 			: instanceKey;
 		const index = this.rows.findIndex(row => row.key === targetKey);
-		const scrollContainer = this.contentEl.querySelector('.scroll-container') as HTMLElement | null;
+		const scrollContainer = queryHtmlElement(this.contentEl, '.scroll-container');
 		if (index !== -1 && scrollContainer) {
 			scrollContainer.scrollTop = Math.max(0, index * ROW_HEIGHT - scrollContainer.clientHeight / 2 + ROW_HEIGHT / 2);
 			this.paintVisibleRows();
@@ -2048,19 +2051,22 @@ export class TagExplorerView extends ItemView {
 
 		let el: HTMLElement | null = null;
 		if (instanceKey.startsWith('file:') && filePath) {
-			el = this.contentEl.querySelector(
+			el = queryHtmlElement(
+				this.contentEl,
 				`[data-instance-key="${CSS.escape(instanceKey)}"][data-path="${CSS.escape(filePath)}"]`
-			) as HTMLElement | null;
+			);
 		} else {
-			el = this.contentEl.querySelector(
+			el = queryHtmlElement(
+				this.contentEl,
 				`[data-instance-key="${CSS.escape(instanceKey)}"]`
-			) as HTMLElement | null;
+			);
 		}
 		if (!el) return;
 
-		el.addClass('is-highlighted');
+		const highlighted = el;
+		highlighted.addClass('is-highlighted');
 		this.highlightTimeout = window.setTimeout(() => {
-			el!.removeClass('is-highlighted');
+			highlighted.removeClass('is-highlighted');
 			this.highlightTimeout = null;
 		}, 1500);
 	}
@@ -2190,10 +2196,10 @@ export class TagExplorerView extends ItemView {
 	 * Render the filter bar with tag input and selected filter chips
 	 */
 	private renderFilterBar(container: HTMLElement): void {
-		const filterBar = container.createEl('div', { cls: 'filter-bar' });
+		const filterBar = container.createDiv({ cls: 'filter-bar' });
 
 		// Filter input container (with dropdown)
-		const inputContainer = filterBar.createEl('div', { cls: 'filter-input-container' });
+		const inputContainer = filterBar.createDiv({ cls: 'filter-input-container' });
 		const input = inputContainer.createEl('input', {
 			cls: 'filter-input',
 			attr: { 
@@ -2203,9 +2209,7 @@ export class TagExplorerView extends ItemView {
 		});
 
 		// Suggestions dropdown
-		const suggestionsEl = inputContainer.createEl('div', { cls: 'filter-suggestions' });
-		suggestionsEl.style.display = 'none';
-		suggestionsEl.style.pointerEvents = 'none';
+		const suggestionsEl = inputContainer.createDiv({ cls: 'filter-suggestions is-hidden' });
 
 		// Get available tags (exclude already selected or excluded)
 		const availableTags = this.plugin.tagIndex.getAllTags()
@@ -2216,8 +2220,7 @@ export class TagExplorerView extends ItemView {
 		let filteredSuggestions: string[] = [];
 
 		const hideSuggestions = () => {
-			suggestionsEl.style.display = 'none';
-			suggestionsEl.style.pointerEvents = 'none';
+			suggestionsEl.addClass('is-hidden');
 			suggestionsEl.empty();
 			selectedIndex = -1;
 			filteredSuggestions = [];
@@ -2242,22 +2245,21 @@ export class TagExplorerView extends ItemView {
 				return;
 			}
 
-			suggestionsEl.style.display = 'block';
-			suggestionsEl.style.pointerEvents = 'auto';
+			suggestionsEl.removeClass('is-hidden');
 			for (let i = 0; i < Math.min(filteredSuggestions.length, 10); i++) {
 				const tag = filteredSuggestions[i];
-				const item = suggestionsEl.createEl('div', { 
+				const item = suggestionsEl.createDiv({ 
 					cls: 'filter-suggestion-item'
 				});
 				
 				// Tag name
-				item.createEl('span', { 
+				item.createSpan({ 
 					cls: 'filter-suggestion-text',
 					text: tag
 				});
 				
 				// Exclude button
-				const excludeBtn = item.createEl('span', { 
+				const excludeBtn = item.createSpan({ 
 					cls: 'filter-suggestion-exclude',
 					text: '🛇',
 					attr: { 'aria-label': 'Exclude this tag' }
@@ -2295,7 +2297,7 @@ export class TagExplorerView extends ItemView {
 		input.addEventListener('input', updateSuggestions);
 		input.addEventListener('focus', updateSuggestions);
 		input.addEventListener('click', () => {
-			if (suggestionsEl.style.display === 'none') {
+			if (suggestionsEl.hasClass('is-hidden')) {
 				updateSuggestions();
 			}
 		});
@@ -2327,12 +2329,12 @@ export class TagExplorerView extends ItemView {
 		// Hide suggestions when clicking outside or losing focus
 		input.addEventListener('blur', () => {
 			// Small delay to allow click events on suggestions to fire first
-			setTimeout(() => hideSuggestions(), 150);
+			window.setTimeout(() => hideSuggestions(), 150);
 		});
 
 		// Filter action buttons - only show when 2+ total tags are selected (include + exclude)
 		if (this.filterTags.size + this.excludeTags.size >= 2) {
-			const filterActionsContainer = filterBar.createEl('div', { cls: 'filter-actions-container' });
+			const filterActionsContainer = filterBar.createDiv({ cls: 'filter-actions-container' });
 			
 			// "Create tag from filters" button
 			const createTagBtn = filterActionsContainer.createEl('button', {
@@ -2350,20 +2352,20 @@ export class TagExplorerView extends ItemView {
 			});
 
 			// Icon buttons container
-			const iconButtonsContainer = filterActionsContainer.createEl('div', { cls: 'filter-action-buttons' });
+			const iconButtonsContainer = filterActionsContainer.createDiv({ cls: 'filter-action-buttons' });
 
 			// "New note with tags" button
-			const newNoteBtn = iconButtonsContainer.createEl('div', {
+			const newNoteBtn = iconButtonsContainer.createDiv({
 				cls: 'clickable-icon filter-action-button',
 				attr: { 'aria-label': 'New note with tags' }
 			});
 			setIcon(newNoteBtn, 'file-plus-2');
-			newNoteBtn.addEventListener('click', async () => {
+			newNoteBtn.addEventListener('click', () => { void (async () => {
 				await this.createNoteWithFilterTags();
-			});
+			})(); });
 
 			// "Add filters to search" button
-			const searchBtn = iconButtonsContainer.createEl('div', {
+			const searchBtn = iconButtonsContainer.createDiv({
 				cls: 'clickable-icon filter-action-button',
 				attr: { 'aria-label': 'Add filters to search' }
 			});
@@ -2375,7 +2377,7 @@ export class TagExplorerView extends ItemView {
 
 		// Selected filter tags as chips (below the search bar)
 		if (this.filterTags.size > 0 || this.excludeTags.size > 0) {
-			const chipsContainer = filterBar.createEl('div', { cls: 'filter-chips' });
+			const chipsContainer = filterBar.createDiv({ cls: 'filter-chips' });
 			
 			// Render included filter tags (purple)
 			for (const tag of this.filterTags) {
@@ -2388,7 +2390,7 @@ export class TagExplorerView extends ItemView {
 			}
 			
 			// Clear all filters button
-			const clearAllBtn = chipsContainer.createEl('div', { cls: 'filter-clear-all' });
+			const clearAllBtn = chipsContainer.createDiv({ cls: 'filter-clear-all' });
 			setIcon(clearAllBtn, 'x');
 			clearAllBtn.setAttribute('aria-label', 'Clear all filters');
 			clearAllBtn.addEventListener('click', (e) => {
@@ -2469,8 +2471,8 @@ export class TagExplorerView extends ItemView {
 
 		// Trigger rename mode after Obsidian has fully initialized the view
 		// Use a longer delay to avoid race conditions with Obsidian's own initialization
-		setTimeout(() => {
-			(this.plugin.app as any).commands.executeCommandById('workspace:edit-file-title');
+		window.setTimeout(() => {
+			executeCommandById(this.plugin.app, 'workspace:edit-file-title');
 		}, 300);
 	}
 
@@ -2494,10 +2496,7 @@ export class TagExplorerView extends ItemView {
 		const query = queryParts.join(' ');
 
 		// Open global search with the query
-		const searchPlugin = (this.plugin.app as any).internalPlugins?.getPluginById('global-search');
-		if (searchPlugin?.instance) {
-			searchPlugin.instance.openGlobalSearch(query);
-		}
+		openGlobalSearch(this.plugin.app, query);
 	}
 
 	/**
@@ -2520,18 +2519,18 @@ export class TagExplorerView extends ItemView {
 			new Notice(`No instances of #${tag} found`);
 		}
 
-		this.refresh();
+		void this.refresh();
 	}
 
 	/**
 	 * Render a filter chip (for included or excluded tags)
 	 */
 	private renderFilterChip(container: HTMLElement, tag: string, isExcluded: boolean): void {
-		const chip = container.createEl('div', { 
+		const chip = container.createDiv({ 
 			cls: `filter-chip${isExcluded ? ' filter-chip-excluded' : ''}` 
 		});
 
-		const toggleBtn = chip.createEl('div', {
+		const toggleBtn = chip.createDiv({
 			cls: 'filter-chip-toggle',
 			attr: { 'aria-label': isExcluded ? 'Include this tag' : 'Exclude this tag' }
 		});
@@ -2541,16 +2540,16 @@ export class TagExplorerView extends ItemView {
 			this.toggleFilterMode(tag, isExcluded);
 		});
 		
-		const chipText = chip.createEl('span', { text: tag, cls: 'filter-chip-text' });
+		const chipText = chip.createSpan({ text: tag, cls: 'filter-chip-text' });
 		
 		// Left click on text opens the tag file
-		chipText.addEventListener('click', async (e) => {
+		chipText.addEventListener('click', (e) => { void (async () => {
 			e.stopPropagation();
 			const tagFile = this.plugin.tagIndex.getTagFile(tag);
 			if (tagFile) {
 				await this.plugin.app.workspace.getLeaf().openFile(tagFile);
 			}
-		});
+		})(); });
 		
 		// Right click on text shows context menu
 		chipText.addEventListener('contextmenu', (e) => {
@@ -2559,7 +2558,7 @@ export class TagExplorerView extends ItemView {
 			this.showFilterChipContextMenu(e, tag, isExcluded);
 		});
 		
-		const removeBtn = chip.createEl('div', { cls: 'filter-chip-remove' });
+		const removeBtn = chip.createDiv({ cls: 'filter-chip-remove' });
 		setIcon(removeBtn, 'x');
 		removeBtn.addEventListener('click', (e) => {
 			e.stopPropagation();
@@ -2576,20 +2575,20 @@ export class TagExplorerView extends ItemView {
 	 * Show context menu for a filter chip (without expand/collapse options)
 	 */
 	private showFilterChipContextMenu(event: MouseEvent, tag: string, isExcluded: boolean): void {
-		const menu = new (require('obsidian').Menu)();
+		const menu = new Menu();
 		
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Open tag file')
 				.setIcon('file-text')
-				.onClick(async () => {
+				.onClick(() => { void (async () => {
 					const tagFile = this.plugin.tagIndex.getTagFile(tag);
 					if (tagFile) {
 						await this.plugin.app.workspace.getLeaf().openFile(tagFile);
 					}
-				});
+				})(); });
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Rename tag')
 				.setIcon('pencil')
 				.onClick(() => {
@@ -2599,7 +2598,7 @@ export class TagExplorerView extends ItemView {
 
 		menu.addSeparator();
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle(isExcluded ? 'Include tag' : 'Exclude tag')
 				.setIcon(isExcluded ? 'filter' : 'filter-x')
 				.onClick(() => {
@@ -2607,7 +2606,7 @@ export class TagExplorerView extends ItemView {
 				});
 		});
 
-		menu.addItem((item: any) => {
+		menu.addItem((item) => {
 			item.setTitle('Remove from filter')
 				.setIcon('x')
 				.onClick(() => {
@@ -2803,540 +2802,10 @@ export class TagExplorerView extends ItemView {
 		return Array.from(files);
 	}
 
-	private addStyles(): void {
-		// Only add styles once
-		if (this.styleEl) return;
-		
-		// Add custom styles for the explorer to containerEl (persists across refreshes)
-		this.styleEl = document.createElement('style');
-		this.styleEl.textContent = `
-			.taggable-tags-explorer {
-				height: 100%;
-				display: flex;
-				flex-direction: column;
-				overflow: hidden;
-				padding: 0 !important;
-			}
-			/* Fixed header container - does not scroll */
-			.taggable-tags-explorer .fixed-header {
-				flex-shrink: 0;
-				border-bottom: 1px solid var(--background-modifier-border);
-			}
-			/* Scrollable content area */
-			.taggable-tags-explorer .scroll-container {
-				flex: 1;
-				overflow-y: auto;
-				overflow-x: hidden;
-				padding: 0;
-				padding-left: 4px;
-				padding-top: 5px;
-				padding-bottom: 2px;
-			}
-			/* Remove padding/margin from containers to eliminate scrollbar gap */
-			.taggable-tags-explorer .nav-files-container {
-				position: relative;
-				padding: 0 !important;
-				margin: 0 !important;
-			}
-			.taggable-tags-explorer .nav-folder.mod-root {
-				padding: 0 !important;
-				margin: 0 !important;
-			}
-			.taggable-tags-explorer .virtual-list-spacer {
-				pointer-events: none;
-			}
-			.taggable-tags-explorer .virtual-list-window {
-				position: absolute;
-				left: 0;
-				right: 0;
-			}
-			.taggable-tags-explorer .virtual-row {
-				height: 26px;
-				overflow: hidden;
-			}
-			.taggable-tags-explorer .virtual-row > .tree-item {
-				margin-bottom: 0 !important;
-			}
-			.taggable-tags-explorer .tree-item {
-				padding-right: 0 !important;
-				margin-right: 0 !important;
-				margin-bottom: 4px;
-			}
-			.taggable-tags-explorer .tree-item-children {
-				padding-right: 0 !important;
-				margin-right: 0 !important;
-			}
-			.taggable-tags-explorer .nav-header {
-				padding-top: 6px
-				padding-right: 8px ;
-				padding-bottom: 0;
-				padding-left: 8;
-			}
-			.taggable-tags-explorer .nav-buttons-container {
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				gap: 4px;
-				margin-right: 16px;
-			}
-			.taggable-tags-explorer .nav-action-button {
-				padding: 4px;
-				border-radius: 4px;
-			}
-			.taggable-tags-explorer .nav-action-button:hover {
-				background-color: var(--background-modifier-hover);
-			}
-			.taggable-tags-explorer .nav-action-button.is-active {
-				background-color: var(--interactive-accent);
-				color: var(--text-on-accent);
-			}
-			.taggable-tags-explorer .nav-action-button.is-disabled {
-				opacity: 0.3;
-				cursor: not-allowed;
-				pointer-events: none;
-			}
-			.taggable-tags-explorer .empty-state {
-				padding: 16px;
-				color: var(--text-muted);
-				font-style: italic;
-				pointer-events: none;
-			}
-			/* Tag and file items */
-			.taggable-tags-explorer .tree-item-self {
-				display: flex;
-				align-items: center;
-				padding: 2px 8px;
-				border-radius: 4px;
-				gap: 6px;
-			}
-			.taggable-tags-explorer .file-item {
-				cursor: pointer;
-			}
-			.taggable-tags-explorer .tree-item-self:hover {
-				background-color: var(--background-modifier-hover);
-			}
-			/* Collapse arrow - like Obsidian file explorer */
-			.taggable-tags-explorer .collapse-icon {
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				width: 18px;
-				height: 18px;
-				flex-shrink: 0;
-				color: var(--nav-collapse-icon-color);
-			}
-			.taggable-tags-explorer .collapse-icon svg {
-				width: 16px;
-				height: 16px;
-			}
-			/* Tag name - clickable to open file */
-			.taggable-tags-explorer .tag-name {
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				cursor: pointer;
-			}
-			.taggable-tags-explorer .tag-name:hover {
-				text-decoration: underline;
-			}
-			/* Combined tag parts - each individually clickable */
-			.taggable-tags-explorer .tag-name-part {
-				cursor: pointer;
-			}
-			.taggable-tags-explorer .tag-name-part:hover {
-				text-decoration: underline;
-			}
-			.taggable-tags-explorer .tag-name-separator {
-				color: var(--text-muted);
-				cursor: default;
-			}
-			/* When hovering the container, don't underline everything */
-			.taggable-tags-explorer .tag-name:has(.tag-name-part):hover {
-				text-decoration: none;
-			}
-			/* Tags without corresponding files - grayed out */
-			.taggable-tags-explorer .tag-no-file .tag-name {
-				opacity: 0.5;
-			}
-			/* Individual tag name without file (in combined tags) */
-			.taggable-tags-explorer .tag-name-no-file {
-				opacity: 0.5;
-			}
-			/* List mode items - no extra padding, with icon */
-			.taggable-tags-explorer .list-mode-item {
-				padding-left: 4px !important;
-			}
-			.taggable-tags-explorer .list-mode-icon {
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				width: 18px;
-				height: 18px;
-				flex-shrink: 0;
-				color: var(--text-muted);
-			}
-			.taggable-tags-explorer .list-mode-icon svg {
-				width: 14px;
-				height: 14px;
-			}
-			/* File name */
-			.taggable-tags-explorer .file-name {
-				flex-grow: 1;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				color: var(--text-muted);
-			}
-			/* Inline rename input - matches native file explorer styling */
-			.taggable-tags-explorer .rename-input {
-				all: unset;
-				background: transparent;
-				box-shadow: 0 0 0 2px var(--interactive-accent);
-				border-radius: 5px;
-				padding: 0 1px;
-				font-size: inherit;
-				font-family: inherit;
-				color: var(--text-muted);
-				width: 100%;
-			}
-			/* Highlighted state */
-			.taggable-tags-explorer .is-highlighted {
-				background-color: var(--text-selection) !important;
-			}
-			/* Multi-select state */
-			.taggable-tags-explorer .tree-item-self.is-selected {
-				background-color: var(--text-selection);
-			}
-			.taggable-tags-explorer .tree-item-self.is-selected:hover {
-				background-color: var(--text-selection);
-			}
-			/* Untagged group */
-			.taggable-tags-explorer .untagged-label {
-				color: var(--text-muted);
-				font-style: italic;
-			}
-			.taggable-tags-explorer .untagged-item:hover .untagged-label {
-				text-decoration: none;
-			}
-			/* Attachment groups */
-			.taggable-tags-explorer .attachment-group-label,
-			.taggable-tags-explorer .attachment-subgroup-label {
-				color: var(--text-muted);
-				font-style: italic;
-			}
-			.taggable-tags-explorer .attachment-group-item:hover .attachment-group-label,
-			.taggable-tags-explorer .attachment-subgroup-item:hover .attachment-subgroup-label {
-				text-decoration: none;
-			}
-			/* File format label (right side, like Obsidian's file explorer) */
-			.taggable-tags-explorer .nav-file-tag {
-				flex-shrink: 0;
-				font-size: var(--font-smaller);
-				line-height: 1.4;
-				text-transform: uppercase;
-				color: var(--text-faint);
-				background-color: transparent;
-			}
-			/* Filter bar */
-			.taggable-tags-explorer .filter-bar {
-				padding: 8px;
-			}
-			.taggable-tags-explorer .filter-input-container {
-				position: relative;
-				width: 100%;
-			}
-			.taggable-tags-explorer .filter-input {
-				width: 100%;
-				padding: 6px 8px;
-				border: 1px solid var(--background-modifier-border);
-				border-radius: 4px;
-				background-color: var(--background-primary);
-				color: var(--text-normal);
-				font-size: 13px;
-				box-sizing: border-box;
-			}
-			.taggable-tags-explorer .filter-input:focus {
-				border-color: var(--interactive-accent);
-				outline: none;
-			}
-			.taggable-tags-explorer .filter-input::placeholder {
-				color: var(--text-muted);
-			}
-			.taggable-tags-explorer .filter-suggestions {
-				position: absolute;
-				top: 100%;
-				left: 0;
-				right: 0;
-				max-height: 200px;
-				overflow-y: auto;
-				background-color: var(--background-secondary);
-				border: 1px solid var(--background-modifier-border);
-				border-radius: 4px;
-				margin-top: 2px;
-				z-index: 1000;
-				box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-			}
-			.taggable-tags-explorer .filter-suggestion-item {
-				display: flex;
-				align-items: stretch;
-				justify-content: space-between;
-				padding: 0;
-				cursor: pointer;
-				font-size: 13px;
-			}
-			.taggable-tags-explorer .filter-suggestion-item:hover,
-			.taggable-tags-explorer .filter-suggestion-item.is-selected {
-				background-color: var(--background-modifier-hover);
-			}
-			.taggable-tags-explorer .filter-suggestion-text {
-				flex-grow: 1;
-				display: flex;
-				align-items: center;
-				padding: 6px 10px;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-			}
-			.taggable-tags-explorer .filter-suggestion-exclude {
-				flex-shrink: 0;
-				display: flex;
-				align-items: center;
-				padding: 6px 10px;
-				cursor: pointer;
-				opacity: 0.5;
-				font-size: 14px;
-			}
-			.taggable-tags-explorer .filter-suggestion-exclude:hover {
-				opacity: 1;
-				background-color: rgba(var(--color-red-rgb, 255, 0, 0), 0.15);
-			}
-			/* Filter chips - styled like Obsidian tags */
-			.taggable-tags-explorer .filter-chips {
-				display: flex;
-				flex-wrap: wrap;
-				gap: 6px;
-				margin-top: 8px;
-				align-items: center;
-			}
-			.taggable-tags-explorer .filter-clear-all {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 20px;
-				height: 20px;
-				cursor: pointer;
-				border-radius: 50%;
-				color: var(--text-muted);
-				opacity: 0.7;
-				flex-shrink: 0;
-			}
-			.taggable-tags-explorer .filter-clear-all:hover {
-				opacity: 1;
-				background-color: var(--background-modifier-hover);
-			}
-			.taggable-tags-explorer .filter-clear-all svg {
-				width: 14px;
-				height: 14px;
-			}
-			.taggable-tags-explorer .filter-chip {
-				display: inline-flex;
-				align-items: center;
-				gap: 4px;
-				padding: 3px 8px;
-				background-color: rgba(var(--interactive-accent-rgb), 0.15);
-				color: var(--interactive-accent);
-				border-radius: 14px;
-				font-size: 13px;
-				line-height: 1.4;
-			}
-			.taggable-tags-explorer .filter-chip-toggle {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 14px;
-				height: 14px;
-				cursor: pointer;
-				border-radius: 50%;
-				opacity: 0.7;
-				flex-shrink: 0;
-			}
-			.taggable-tags-explorer .filter-chip-toggle:hover {
-				opacity: 1;
-				background-color: var(--background-modifier-hover);
-			}
-			.taggable-tags-explorer .filter-chip-toggle svg {
-				width: 12px;
-				height: 12px;
-			}
-			.taggable-tags-explorer .filter-chip-text {
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				cursor: pointer;
-			}
-			.taggable-tags-explorer .filter-chip-text:hover {
-				text-decoration: underline;
-			}
-			/* Excluded filter chips - red styling */
-			.taggable-tags-explorer .filter-chip-excluded {
-				background-color: rgba(var(--color-red-rgb, 255, 59, 48), 0.15);
-				color: var(--color-red, #ff3b30);
-			}
-			.taggable-tags-explorer .filter-chip-remove {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 14px;
-				height: 14px;
-				cursor: pointer;
-				border-radius: 50%;
-				opacity: 0.7;
-				flex-shrink: 0;
-			}
-			.taggable-tags-explorer .filter-chip-remove:hover {
-				opacity: 1;
-			}
-			.taggable-tags-explorer .filter-chip-remove svg {
-				width: 12px;
-				height: 12px;
-			}
-			/* Filter actions container */
-			.taggable-tags-explorer .filter-actions-container {
-				display: flex;
-				align-items: center;
-				gap: 8px;
-				margin-top: 8px;
-			}
-			/* Create tag from filters button */
-			.taggable-tags-explorer .create-tag-button {
-				flex: 1;
-				padding: 6px 8px;
-				border: 1px solid var(--background-modifier-border);
-				border-radius: 4px;
-				background-color: var(--background-secondary);
-				color: var(--text-normal);
-				font-size: 13px;
-				cursor: pointer;
-				box-sizing: border-box;
-			}
-			.taggable-tags-explorer .create-tag-button:hover {
-				background-color: var(--background-modifier-hover);
-			}
-			/* Filter action icon buttons */
-			.taggable-tags-explorer .filter-action-buttons {
-				display: flex;
-				gap: 4px;
-				flex-shrink: 0;
-			}
-			.taggable-tags-explorer .filter-action-button {
-				padding: 6px;
-				border-radius: 4px;
-				color: var(--text-muted);
-			}
-			.taggable-tags-explorer .filter-action-button:hover {
-				background-color: var(--background-modifier-hover);
-				color: var(--text-normal);
-			}
-			/* Create tag from filters modal */
-			.create-tag-from-filters-modal {
-				padding: 16px;
-			}
-			.create-tag-from-filters-modal .modal-label {
-				font-size: 14px;
-				color: var(--text-muted);
-				margin: 12px 0 8px 0;
-			}
-			.create-tag-from-filters-modal .modal-label:first-child {
-				margin-top: 0;
-			}
-			.create-tag-from-filters-modal .modal-chips-container {
-				display: flex;
-				flex-wrap: wrap;
-				gap: 6px;
-			}
-			.create-tag-from-filters-modal .modal-chip {
-				display: inline-flex;
-				align-items: center;
-				padding: 4px 10px;
-				border-radius: 14px;
-				font-size: 13px;
-			}
-			.create-tag-from-filters-modal .modal-chip-tag {
-				background-color: rgba(var(--interactive-accent-rgb), 0.15);
-				color: var(--interactive-accent);
-			}
-			.create-tag-from-filters-modal .modal-chip-item {
-				background-color: var(--background-secondary);
-				color: var(--text-normal);
-			}
-			.create-tag-from-filters-modal .modal-chip-file {
-				background-color: var(--background-secondary);
-				color: var(--text-muted);
-			}
-			.create-tag-from-filters-modal .modal-empty-text {
-				color: var(--text-muted);
-				font-style: italic;
-				font-size: 13px;
-			}
-			.create-tag-from-filters-modal .modal-input-container {
-				margin: 8px 0 16px 0;
-			}
-			.create-tag-from-filters-modal .modal-input {
-				width: 100%;
-				padding: 8px;
-				border: 1px solid var(--background-modifier-border);
-				border-radius: 4px;
-				background-color: var(--background-primary);
-				color: var(--text-normal);
-				font-size: 14px;
-				box-sizing: border-box;
-			}
-			.create-tag-from-filters-modal .modal-input:focus {
-				border-color: var(--interactive-accent);
-				outline: none;
-			}
-			.create-tag-from-filters-modal .modal-buttons {
-				display: flex;
-				justify-content: flex-end;
-				gap: 8px;
-			}
-			.merge-tags-modal .merge-tags-heading {
-				display: flex;
-				align-items: center;
-				flex-wrap: wrap;
-				gap: 8px;
-				margin-bottom: 12px;
-			}
-			.merge-tags-modal .merge-tags-heading-label {
-				color: var(--text-muted);
-			}
-			.merge-tags-modal .merge-tags-swap-button {
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				padding: 4px;
-				border-radius: 4px;
-			}
-			.merge-tags-modal .merge-tags-swap-button:hover {
-				background-color: var(--background-modifier-hover);
-			}
-			.merge-tags-modal .merge-tags-summary {
-				margin: 0;
-				line-height: 1.5;
-			}
-		`;
-		this.containerEl.appendChild(this.styleEl);
-	}
-
 	async onClose(): Promise<void> {
 		if (this.highlightTimeout) {
 			window.clearTimeout(this.highlightTimeout);
 			this.highlightTimeout = null;
-		}
-		// Cleanup styles
-		if (this.styleEl) {
-			this.styleEl.remove();
-			this.styleEl = null;
 		}
 	}
 }
@@ -3360,37 +2829,31 @@ class RenameTagModal extends Modal {
 		
 		contentEl.createEl('h3', { text: `Rename tag #${this.oldTag}` });
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'rename-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'rename-tag-input-container tt-modal-input-block' });
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			value: this.oldTag,
-			cls: 'rename-tag-input'
+			cls: 'rename-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		this.inputEl.select();
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performRename();
+				void this.performRename();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'rename-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'rename-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const renameBtn = buttonContainer.createEl('button', { text: 'Rename', cls: 'mod-cta' });
-		renameBtn.addEventListener('click', () => this.performRename());
+		renameBtn.addEventListener('click', () => void this.performRename());
 	}
 
 	private async performRename(): Promise<void> {
@@ -3423,7 +2886,7 @@ class RenameTagModal extends Modal {
 			new Notice(`Renamed #${this.oldTag} to #${newTag}`);
 		} catch (error) {
 			console.error('Failed to rename tag:', error);
-			new Notice(`Failed to rename tag: ${error}`);
+			new Notice(`Failed to rename tag: ${String(error)}`);
 		}
 	}
 
@@ -3452,44 +2915,36 @@ class CreateTagModal extends Modal {
 		
 		contentEl.createEl('h3', { text: 'Create new tag' });
 		
-		const inputContainer = contentEl.createEl('div', { cls: 'create-tag-input-container' });
-		inputContainer.style.marginBottom = '16px';
+		const inputContainer = contentEl.createDiv({ cls: 'create-tag-input-container tt-modal-input-block' });
 		
-		const labelEl = inputContainer.createEl('label');
+		const labelEl = inputContainer.createEl('label', { cls: 'tt-modal-label' });
 		labelEl.textContent = 'Tag name';
-		labelEl.style.display = 'block';
-		labelEl.style.marginBottom = '4px';
 		
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			placeholder: 'Enter tag name...',
-			cls: 'create-tag-input'
+			cls: 'create-tag-input tt-modal-input'
 		});
-		this.inputEl.style.width = '100%';
-		this.inputEl.style.padding = '8px';
 		
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performCreate();
+				void this.performCreate();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
-		const buttonContainer = contentEl.createEl('div', { cls: 'create-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'create-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performCreate());
+		createBtn.addEventListener('click', () => void this.performCreate());
 		
 		// Focus the input
-		setTimeout(() => this.inputEl?.focus(), 10);
+		window.setTimeout(() => this.inputEl?.focus(), 10);
 	}
 
 	private async performCreate(): Promise<void> {
@@ -3544,7 +2999,7 @@ class CreateTagModal extends Modal {
 			}
 		} catch (error) {
 			console.error('Failed to create tag:', error);
-			new Notice(`Failed to create tag: ${error}`);
+			new Notice(`Failed to create tag: ${String(error)}`);
 		}
 	}
 
@@ -3577,34 +3032,34 @@ class CreateTagFromFiltersModal extends Modal {
 		contentEl.addClass('create-tag-from-filters-modal');
 		
 		// "Replace" label
-		contentEl.createEl('div', { text: 'Replace', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'Replace', cls: 'modal-label' });
 		
 		// Display filter tags as chips
-		const tagsContainer = contentEl.createEl('div', { cls: 'modal-chips-container' });
+		const tagsContainer = contentEl.createDiv({ cls: 'modal-chips-container' });
 		for (const tag of this.filterTags) {
-			const chip = tagsContainer.createEl('span', { cls: 'modal-chip modal-chip-tag' });
+			const chip = tagsContainer.createSpan({ cls: 'modal-chip modal-chip-tag' });
 			chip.textContent = `#${tag}`;
 		}
 		
 		// "in" label
-		contentEl.createEl('div', { text: 'in', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'in', cls: 'modal-label' });
 		
 		// Display items (tags and files)
-		const itemsContainer = contentEl.createEl('div', { cls: 'modal-chips-container' });
+		const itemsContainer = contentEl.createDiv({ cls: 'modal-chips-container' });
 		for (const tag of this.itemTags) {
-			const chip = itemsContainer.createEl('span', { cls: 'modal-chip modal-chip-item' });
+			const chip = itemsContainer.createSpan({ cls: 'modal-chip modal-chip-item' });
 			chip.textContent = `#${tag}`;
 		}
 		for (const file of this.itemFiles) {
-			const chip = itemsContainer.createEl('span', { cls: 'modal-chip modal-chip-file' });
+			const chip = itemsContainer.createSpan({ cls: 'modal-chip modal-chip-file' });
 			chip.textContent = file.basename;
 		}
 		
 		// "with" label
-		contentEl.createEl('div', { text: 'with', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'with', cls: 'modal-label' });
 		
 		// Input for new tag name
-		const inputContainer = contentEl.createEl('div', { cls: 'modal-input-container' });
+		const inputContainer = contentEl.createDiv({ cls: 'modal-input-container' });
 		this.inputEl = inputContainer.createEl('input', {
 			type: 'text',
 			cls: 'modal-input',
@@ -3615,20 +3070,20 @@ class CreateTagFromFiltersModal extends Modal {
 		this.inputEl.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter') {
 				e.preventDefault();
-				this.performCreate();
+				void this.performCreate();
 			} else if (e.key === 'Escape') {
 				this.close();
 			}
 		});
 		
 		// Buttons
-		const buttonContainer = contentEl.createEl('div', { cls: 'modal-buttons' });
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const createBtn = buttonContainer.createEl('button', { text: 'Create', cls: 'mod-cta' });
-		createBtn.addEventListener('click', () => this.performCreate());
+		createBtn.addEventListener('click', () => void this.performCreate());
 	}
 
 	private async performCreate(): Promise<void> {
@@ -3689,7 +3144,7 @@ class CreateTagFromFiltersModal extends Modal {
 			new Notice(`Created tag #${newTag} and updated ${this.itemTags.length + this.itemFiles.length} items`);
 		} catch (error) {
 			console.error('Failed to create tag from filters:', error);
-			new Notice(`Failed to create tag: ${error}`);
+			new Notice(`Failed to create tag: ${String(error)}`);
 		}
 	}
 
@@ -3815,51 +3270,50 @@ class SplitTagModal extends Modal {
 		contentEl.addClass('create-tag-from-filters-modal'); // Reuse same styling
 		
 		// "Replace" label
-		contentEl.createEl('div', { text: 'Replace', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'Replace', cls: 'modal-label' });
 		
 		// Display the tag being split/merged
-		const tagContainer = contentEl.createEl('div', { cls: 'modal-chips-container' });
-		const tagChip = tagContainer.createEl('span', { cls: 'modal-chip modal-chip-tag' });
+		const tagContainer = contentEl.createDiv({ cls: 'modal-chips-container' });
+		const tagChip = tagContainer.createSpan({ cls: 'modal-chip modal-chip-tag' });
 		tagChip.textContent = `#${this.tag}`;
 		
 		// "in" label
-		contentEl.createEl('div', { text: 'in', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'in', cls: 'modal-label' });
 		
 		// Display direct children (tags and files)
-		const itemsContainer = contentEl.createEl('div', { cls: 'modal-chips-container' });
+		const itemsContainer = contentEl.createDiv({ cls: 'modal-chips-container' });
 		if (this.childTags.length === 0 && this.childFiles.length === 0) {
-			itemsContainer.createEl('span', { text: '(no direct children)', cls: 'modal-empty-text' });
+			itemsContainer.createSpan({ text: '(no direct children)', cls: 'modal-empty-text' });
 		} else {
 			for (const childTag of this.childTags) {
-				const chip = itemsContainer.createEl('span', { cls: 'modal-chip modal-chip-item' });
+				const chip = itemsContainer.createSpan({ cls: 'modal-chip modal-chip-item' });
 				chip.textContent = `#${childTag}`;
 			}
 			for (const file of this.childFiles) {
-				const chip = itemsContainer.createEl('span', { cls: 'modal-chip modal-chip-file' });
+				const chip = itemsContainer.createSpan({ cls: 'modal-chip modal-chip-file' });
 				chip.textContent = file.basename;
 			}
 		}
 		
 		// "with" label
-		contentEl.createEl('div', { text: 'with', cls: 'modal-label' });
+		contentEl.createDiv({ text: 'with', cls: 'modal-label' });
 		
 		// Display parent tags (read-only)
-		const parentsContainer = contentEl.createEl('div', { cls: 'modal-chips-container' });
+		const parentsContainer = contentEl.createDiv({ cls: 'modal-chips-container' });
 		for (const parentTag of this.parentTags) {
-			const chip = parentsContainer.createEl('span', { cls: 'modal-chip modal-chip-tag' });
+			const chip = parentsContainer.createSpan({ cls: 'modal-chip modal-chip-tag' });
 			chip.textContent = `#${parentTag}`;
 		}
 		
 		// Buttons
-		const buttonContainer = contentEl.createEl('div', { cls: 'modal-buttons' });
-		buttonContainer.style.marginTop = '16px';
+		const buttonContainer = contentEl.createDiv({ cls: 'modal-buttons tt-modal-buttons-spaced' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 		
 		const actionText = this.parentTags.length > 1 ? 'Split' : 'Merge';
 		const confirmBtn = buttonContainer.createEl('button', { text: actionText, cls: 'mod-cta' });
-		confirmBtn.addEventListener('click', () => this.performSplit());
+		confirmBtn.addEventListener('click', () => void this.performSplit());
 	}
 
 	private async performSplit(): Promise<void> {
@@ -3882,7 +3336,7 @@ class SplitTagModal extends Modal {
 			const tagFile = this.plugin.tagIndex.getTagFile(this.tag);
 			if (tagFile) {
 				markPluginInitiatedChange(tagFile.path);
-				await this.plugin.app.vault.delete(tagFile);
+				await this.plugin.app.fileManager.trashFile(tagFile);
 			}
 			
 			// 3. Rebuild the index
@@ -3892,7 +3346,7 @@ class SplitTagModal extends Modal {
 			new Notice(`${actionText} #${this.tag} into ${this.parentTags.map(t => '#' + t).join(', ')}`);
 		} catch (error) {
 			console.error('Failed to split/merge tag:', error);
-			new Notice(`Failed to split/merge tag: ${error}`);
+			new Notice(`Failed to split/merge tag: ${String(error)}`);
 		}
 	}
 
@@ -3969,13 +3423,13 @@ export function registerTagExplorerView(plugin: TaggableTagsPlugin): void {
 		id: 'open-tag-explorer',
 		name: 'Open tag explorer',
 		callback: () => {
-			activateTagExplorerView(plugin);
+			void activateTagExplorerView(plugin);
 		},
 	});
 
 	// Add ribbon icon
-	plugin.addRibbonIcon('tags', 'Open Tag Explorer', () => {
-		activateTagExplorerView(plugin);
+	plugin.addRibbonIcon('tags', 'Open tag explorer', () => {
+		void activateTagExplorerView(plugin);
 	});
 }
 
@@ -4001,7 +3455,7 @@ export async function activateTagExplorerView(plugin: TaggableTagsPlugin): Promi
 	}
 
 	if (leaf) {
-		workspace.revealLeaf(leaf);
+		void workspace.revealLeaf(leaf);
 		return leaf.view as TagExplorerView;
 	}
 

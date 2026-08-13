@@ -1,5 +1,6 @@
 import { TFile, debounce, Notice, normalizePath, CachedMetadata } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { readFrontmatterTags } from '../utils/frontmatter';
 import { UnusedTagModal } from '../ui/unused-tag-modal';
 import { updateTagProperty, markPluginInitiatedChange, isPluginInitiatedChange } from './file-rename-sync';
 import { deleteTagAndInstances } from './delete-tag';
@@ -15,14 +16,9 @@ function getTagsFromCache(cache: CachedMetadata | null, plugin: TaggableTagsPlug
 	if (!cache) return tags;
 	
 	// Get tags from frontmatter
-	if (cache.frontmatter?.tags) {
-		const fmTags = cache.frontmatter.tags;
-		if (Array.isArray(fmTags)) {
-			for (const tag of fmTags) {
-				if (typeof tag === 'string' && !tag.includes('/')) {
-					tags.add(plugin.tagIndex.normalizeTag(tag));
-				}
-			}
+	for (const tag of readFrontmatterTags(cache)) {
+		if (!tag.includes('/')) {
+			tags.add(plugin.tagIndex.normalizeTag(tag));
 		}
 	}
 	
@@ -155,7 +151,7 @@ async function handleUnusedTag(plugin: TaggableTagsPlugin, tagFile: TFile, tagNa
 				// Update the tag registry
 				await plugin.updateTagRegistry();
 			} catch (error) {
-				new Notice(`Failed to delete tag: ${error}`);
+				new Notice(`Failed to delete tag: ${String(error)}`);
 			}
 			break;
 
@@ -190,7 +186,7 @@ async function handleUnusedTag(plugin: TaggableTagsPlugin, tagFile: TFile, tagNa
 					// Rebuild index
 					await plugin.tagIndex.rebuild();
 				} catch (error) {
-					new Notice(`Failed to rename tag: ${error}`);
+					new Notice(`Failed to rename tag: ${String(error)}`);
 				}
 			}
 			break;

@@ -8,6 +8,11 @@ import {
 	unsanitizeFromFilesystem,
 	namesMatch,
 } from '../utils/tag-naming';
+import {
+	frontmatterRecord,
+	readFrontmatterString,
+	readFrontmatterTags,
+} from '../utils/frontmatter';
 
 /**
  * Maintains a mapping between tags used in the vault and their corresponding tag definition files.
@@ -108,15 +113,7 @@ export class TagIndex {
 	 */
 	getTagPropertyValue(file: TFile): string | null {
 		const cache = this.app.metadataCache.getFileCache(file);
-		if (!cache?.frontmatter) {
-			return null;
-		}
-		const propName = this.settings.tagPropertyName;
-		const propValue = cache.frontmatter[propName];
-		if (typeof propValue === 'string' && propValue.trim()) {
-			return propValue.trim();
-		}
-		return null;
+		return readFrontmatterString(cache, this.settings.tagPropertyName);
 	}
 
 	/**
@@ -420,17 +417,10 @@ export class TagIndex {
 			const cache = this.app.metadataCache.getFileCache(file);
 			let hasTags = false;
 			
-			// Check frontmatter tags
-			if (cache?.frontmatter?.tags) {
-				const fmTags = cache.frontmatter.tags;
-				if (Array.isArray(fmTags) && fmTags.length > 0) {
-					// Check if any non-nested tags exist
-					for (const tag of fmTags) {
-						if (typeof tag === 'string' && !tag.includes('/')) {
-							hasTags = true;
-							break;
-						}
-					}
+			for (const tag of readFrontmatterTags(cache)) {
+				if (!tag.includes('/')) {
+					hasTags = true;
+					break;
 				}
 			}
 			
@@ -536,10 +526,8 @@ export class TagIndex {
 			return false;
 		}
 
-		const newTagProp = cache.frontmatter?.[this.settings.tagPropertyName];
-		const newTagName = (typeof newTagProp === 'string' && newTagProp.trim())
-			? this.normalizeTag(newTagProp.trim())
-			: null;
+		const newTagProp = readFrontmatterString(cache, this.settings.tagPropertyName);
+		const newTagName = newTagProp ? this.normalizeTag(newTagProp) : null;
 		const oldTagName = this.fileToTag.get(file.path) ?? null;
 		if (oldTagName === null && newTagName !== null) return true;
 		if (oldTagName !== null && newTagName === null) return true;
@@ -557,12 +545,9 @@ export class TagIndex {
 		}
 
 		const newTagKeys = new Set<string>();
-		const fmTags = cache.frontmatter?.tags;
-		if (Array.isArray(fmTags)) {
-			for (const tag of fmTags) {
-				if (typeof tag === 'string' && !tag.includes('/')) {
-					newTagKeys.add(this.key(this.normalizeTag(tag)));
-				}
+		for (const tag of readFrontmatterTags(cache)) {
+			if (!tag.includes('/')) {
+				newTagKeys.add(this.key(this.normalizeTag(tag)));
 			}
 		}
 		// Tag files only contribute frontmatter tags (parents) to the index.
@@ -581,7 +566,7 @@ export class TagIndex {
 			const oldExceptions = this.tagExceptions.get(k) ?? new Set<string>();
 			const oldExclusive = this.exclusiveTags.has(k);
 			const parsed = this.parseExceptionProperty(
-				cache.frontmatter?.[this.settings.exceptionToPropertyName]
+				frontmatterRecord(cache)?.[this.settings.exceptionToPropertyName]
 			);
 			if (oldExclusive !== parsed.isExclusive) return true;
 			if (!this.sameStringSet(oldExceptions, parsed.tags)) return true;
@@ -657,19 +642,14 @@ export class TagIndex {
 				}
 				// Also track the tags used IN this tag file (for parent relationships and unused detection)
 				const cache = this.app.metadataCache.getFileCache(file);
-				if (cache?.frontmatter?.tags) {
-					const fmTags = cache.frontmatter.tags;
-					if (Array.isArray(fmTags)) {
-						for (const tag of fmTags) {
-							if (typeof tag === 'string' && !tag.includes('/')) {
-								const canonical = this.remember(this.normalizeTag(tag));
-								const k = this.key(canonical);
-								if (!this.tagToFiles.has(k)) {
-									this.tagToFiles.set(k, new Set());
-								}
-								this.tagToFiles.get(k)!.add(file);
-							}
+				for (const tag of readFrontmatterTags(cache)) {
+					if (!tag.includes('/')) {
+						const canonical = this.remember(this.normalizeTag(tag));
+						const k = this.key(canonical);
+						if (!this.tagToFiles.has(k)) {
+							this.tagToFiles.set(k, new Set());
 						}
+						this.tagToFiles.get(k)!.add(file);
 					}
 				}
 				continue;
@@ -681,16 +661,10 @@ export class TagIndex {
 
 			const fileTagKeys = new Set<string>();
 
-			// Get tags from frontmatter
-			if (cache.frontmatter?.tags) {
-				const fmTags = cache.frontmatter.tags;
-				if (Array.isArray(fmTags)) {
-					for (const tag of fmTags) {
-						if (typeof tag === 'string' && !tag.includes('/')) {
-							const canonical = this.remember(this.normalizeTag(tag));
-							fileTagKeys.add(this.key(canonical));
-						}
-					}
+			for (const tag of readFrontmatterTags(cache)) {
+				if (!tag.includes('/')) {
+					const canonical = this.remember(this.normalizeTag(tag));
+					fileTagKeys.add(this.key(canonical));
 				}
 			}
 
@@ -724,29 +698,26 @@ export class TagIndex {
 			this.fileToTag.set(selected.file.path, canonical);
 
 			const cache = this.app.metadataCache.getFileCache(selected.file);
-			if (cache?.frontmatter?.tags) {
-				const parentTags = cache.frontmatter.tags;
-				if (Array.isArray(parentTags)) {
-					const parents = new Set<string>();
-					for (const parent of parentTags) {
-						if (typeof parent === 'string') {
-							const parentCanonical = this.remember(this.normalizeTag(parent));
-							const parentKey = this.key(parentCanonical);
-							parents.add(parentKey);
-							
-							if (!this.tagChildren.has(parentKey)) {
-								this.tagChildren.set(parentKey, new Set());
-							}
-							this.tagChildren.get(parentKey)!.add(k);
-						}
+			const parentTags = readFrontmatterTags(cache);
+			if (parentTags.length > 0) {
+				const parents = new Set<string>();
+				for (const parent of parentTags) {
+					const parentCanonical = this.remember(this.normalizeTag(parent));
+					const parentKey = this.key(parentCanonical);
+					parents.add(parentKey);
+					
+					if (!this.tagChildren.has(parentKey)) {
+						this.tagChildren.set(parentKey, new Set());
 					}
-					this.tagParents.set(k, parents);
+					this.tagChildren.get(parentKey)!.add(k);
 				}
+				this.tagParents.set(k, parents);
 			}
 
-			if (cache?.frontmatter) {
+			const fm = frontmatterRecord(cache);
+			if (fm) {
 				const exceptionPropName = this.settings.exceptionToPropertyName;
-				const exceptionValue = cache.frontmatter[exceptionPropName];
+				const exceptionValue = fm[exceptionPropName];
 				if (exceptionValue) {
 					const exceptions = this.parseExceptionProperty(exceptionValue);
 					if (exceptions.tags.size > 0) {
@@ -950,22 +921,11 @@ export class TagIndex {
 	 */
 	getFirstTag(file: TFile): string | null {
 		const cache = this.app.metadataCache.getFileCache(file);
-		if (!cache?.frontmatter?.tags) {
-			return null;
-		}
-		
-		const tags = cache.frontmatter.tags;
-		if (!Array.isArray(tags)) {
-			return null;
-		}
-		
-		// Find the first flat tag (no '/')
-		for (const tag of tags) {
-			if (typeof tag === 'string' && !tag.includes('/')) {
+		for (const tag of readFrontmatterTags(cache)) {
+			if (!tag.includes('/')) {
 				return this.normalizeTag(tag);
 			}
 		}
-		
 		return null;
 	}
 
@@ -975,18 +935,9 @@ export class TagIndex {
 	 */
 	getAllTagsFromFile(file: TFile): string[] {
 		const cache = this.app.metadataCache.getFileCache(file);
-		if (!cache?.frontmatter?.tags) {
-			return [];
-		}
-		
-		const tags = cache.frontmatter.tags;
-		if (!Array.isArray(tags)) {
-			return [];
-		}
-		
 		const result: string[] = [];
-		for (const tag of tags) {
-			if (typeof tag === 'string' && !tag.includes('/')) {
+		for (const tag of readFrontmatterTags(cache)) {
+			if (!tag.includes('/')) {
 				result.push(this.normalizeTag(tag));
 			}
 		}

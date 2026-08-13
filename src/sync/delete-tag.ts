@@ -1,4 +1,5 @@
-import { TFile, Notice } from 'obsidian';
+import { TFile } from 'obsidian';
+import { readFrontmatterTags } from '../utils/frontmatter';
 import type TaggableTagsPlugin from '../main';
 import { markPluginInitiatedChange } from './file-rename-sync';
 
@@ -41,7 +42,7 @@ export async function removeTagFromFile(plugin: TaggableTagsPlugin, file: TFile,
 			'g'
 		);
 		
-		newFrontmatter = newFrontmatter.replace(yamlArrayRegex, (match, prefix, items, suffix) => {
+		newFrontmatter = newFrontmatter.replace(yamlArrayRegex, (match: string, prefix: string, items: string, suffix: string) => {
 			// Split items, filter out the tag, rejoin
 			const itemList = items.split(',').map((item: string) => item.trim()).filter((item: string) => item !== '');
 			const filteredItems = itemList.filter((item: string) => {
@@ -221,14 +222,9 @@ function getFileNonNestedTags(plugin: TaggableTagsPlugin, file: TFile): string[]
 	if (!cache) return tags;
 	
 	// Get tags from frontmatter
-	if (cache.frontmatter?.tags) {
-		const fmTags = cache.frontmatter.tags;
-		if (Array.isArray(fmTags)) {
-			for (const tag of fmTags) {
-				if (typeof tag === 'string' && !tag.includes('/')) {
-					tags.push(plugin.tagIndex.normalizeTag(tag));
-				}
-			}
+	for (const tag of readFrontmatterTags(cache)) {
+		if (!tag.includes('/')) {
+			tags.push(plugin.tagIndex.normalizeTag(tag));
 		}
 	}
 	
@@ -275,7 +271,7 @@ export async function deleteTagAndInstances(
 	let tagsDeleted = 0;
 	if (tagFile) {
 		markPluginInitiatedChange(tagFile.path);
-		await plugin.app.vault.delete(tagFile);
+		await plugin.app.fileManager.trashFile(tagFile);
 		tagsDeleted = 1;
 	}
 	
@@ -334,13 +330,13 @@ export async function deleteTagAndExclusiveChildren(
 	// Delete note files
 	for (const file of noteFilesToDelete) {
 		markPluginInitiatedChange(file.path);
-		await plugin.app.vault.delete(file);
+		await plugin.app.fileManager.trashFile(file);
 	}
 	
 	// Delete tag files
 	for (const file of tagFilesToDelete) {
 		markPluginInitiatedChange(file.path);
-		await plugin.app.vault.delete(file);
+		await plugin.app.fileManager.trashFile(file);
 	}
 	
 	// Rebuild the index
@@ -398,13 +394,13 @@ export async function deleteTagAndAllChildren(
 	// Delete note files
 	for (const file of noteFilesToDelete) {
 		markPluginInitiatedChange(file.path);
-		await plugin.app.vault.delete(file);
+		await plugin.app.fileManager.trashFile(file);
 	}
 	
 	// Delete tag files
 	for (const file of tagFilesToDelete) {
 		markPluginInitiatedChange(file.path);
-		await plugin.app.vault.delete(file);
+		await plugin.app.fileManager.trashFile(file);
 	}
 	
 	// Rebuild the index

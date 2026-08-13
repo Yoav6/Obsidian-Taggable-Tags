@@ -75,12 +75,12 @@ export class FlattenFileStructureModal extends Modal {
 		});
 		
 		const suggestionsEl = suggestionContainer.createDiv({ cls: 'flatten-suggestions-list' });
-		const commonFolders = ['.obsidian', 'templates', 'attachments', 'assets', 'images'];
+		const commonFolders = [this.plugin.app.vault.configDir, 'templates', 'attachments', 'assets', 'images'];
 		
 		for (const folder of commonFolders) {
 			const folderExists = this.plugin.app.vault.getAbstractFileByPath(folder) instanceof TFolder;
 			if (folderExists) {
-				const chip = suggestionsEl.createEl('span', { 
+				const chip = suggestionsEl.createSpan({ 
 					text: folder,
 					cls: 'flatten-suggestion-chip'
 				});
@@ -109,7 +109,8 @@ export class FlattenFileStructureModal extends Modal {
 				}))
 			.addButton(button => button
 				.setButtonText('Flatten vault')
-				.setWarning()
+				.setDestructive()
+				.setCta()
 				.onClick(() => {
 					this.resolve({ ignoredFolders: this.ignoredFolders });
 					this.close();

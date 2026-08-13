@@ -2,10 +2,9 @@
 	"id": "taggable-tags",
 	"name": "Taggable Tags",
 	"version": "0.1.5",
-	"minAppVersion": "0.15.0",
+	"minAppVersion": "1.13.0",
 	"description": "Turn tags into taggable tag notes and sync between your tag and folder hierarchy.",
 	"author": "Yoav Ravid",
 	"authorUrl": "https://x.com/YoavRavid",
-	"fundingUrl": "",
 	"isDesktopOnly": false
 }

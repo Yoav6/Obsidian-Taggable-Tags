@@ -79,8 +79,8 @@ function getTagInfo(target: HTMLElement): { tagName: string } | null {
 
 	// Check for property tags
 	// The structure is: .metadata-property[data-property-key="tags"] > ... > .multi-select-pill > .multi-select-pill-content
-	const pillContent = target.closest('.multi-select-pill-content') as HTMLElement | null;
-	const pill = target.closest('.multi-select-pill') as HTMLElement | null;
+	const pillContent = target.closest('.multi-select-pill-content');
+	const pill = target.closest('.multi-select-pill');
 	
 	// Check if we're hovering on the pill content or the pill itself (but not the remove button)
 	const isOnPillContent = pillContent !== null;

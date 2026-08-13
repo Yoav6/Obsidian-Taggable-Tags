@@ -48,35 +48,21 @@ export class DeleteTagModal extends Modal {
 		contentEl.createEl('h2', { text: title });
 		
 		// Tag being deleted
-		const tagDisplay = contentEl.createEl('div', { cls: 'delete-tag-target' });
-		tagDisplay.style.marginBottom = '16px';
-		tagDisplay.style.padding = '8px 12px';
-		tagDisplay.style.backgroundColor = 'var(--background-secondary)';
-		tagDisplay.style.borderRadius = '4px';
-		tagDisplay.style.fontFamily = 'var(--font-monospace)';
-		tagDisplay.createEl('span', { text: `#${this.stats.tagName}` });
+		const tagDisplay = contentEl.createDiv({ cls: 'delete-tag-target tt-modal-info-panel' });
+		tagDisplay.createSpan({ text: `#${this.stats.tagName}` });
 		
 		// Warning message
-		const warningEl = contentEl.createEl('div', { cls: 'delete-tag-warning' });
-		warningEl.style.marginBottom = '16px';
-		warningEl.style.padding = '12px';
-		warningEl.style.backgroundColor = 'var(--background-modifier-error)';
-		warningEl.style.borderRadius = '4px';
-		warningEl.style.color = 'var(--text-on-accent)';
+		const warningEl = contentEl.createDiv({ cls: 'delete-tag-warning tt-modal-warning-box' });
 		warningEl.createEl('strong', { text: 'Warning: ' });
-		warningEl.createEl('span', { text: 'This action cannot be undone.' });
+		warningEl.createSpan({ text: 'This action cannot be undone.' });
 		
 		// Stats display
-		const statsEl = contentEl.createEl('div', { cls: 'delete-tag-stats' });
-		statsEl.style.marginBottom = '20px';
+		const statsEl = contentEl.createDiv({ cls: 'delete-tag-stats tt-modal-stats' });
 		
 		this.renderStats(statsEl);
 		
 		// Buttons
-		const buttonContainer = contentEl.createEl('div', { cls: 'delete-tag-buttons' });
-		buttonContainer.style.display = 'flex';
-		buttonContainer.style.justifyContent = 'flex-end';
-		buttonContainer.style.gap = '8px';
+		const buttonContainer = contentEl.createDiv({ cls: 'delete-tag-buttons tt-modal-buttons' });
 		
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
@@ -85,7 +71,7 @@ export class DeleteTagModal extends Modal {
 			text: 'Delete', 
 			cls: 'mod-warning' 
 		});
-		deleteBtn.addEventListener('click', () => this.performDelete());
+		deleteBtn.addEventListener('click', () => void this.performDelete());
 	}
 
 	private getModeTitle(): string {
@@ -100,9 +86,7 @@ export class DeleteTagModal extends Modal {
 	}
 
 	private renderStats(container: HTMLElement): void {
-		const list = container.createEl('ul');
-		list.style.margin = '0';
-		list.style.paddingLeft = '20px';
+		const list = container.createEl('ul', { cls: 'tt-modal-list' });
 		
 		// Tag file status
 		if (this.stats.hasTagFile) {
@@ -208,7 +192,7 @@ export class DeleteTagModal extends Modal {
 			}
 		} catch (error) {
 			console.error('Failed to delete tag:', error);
-			new Notice(`Failed to delete tag: ${error}`);
+			new Notice(`Failed to delete tag: ${String(error)}`);
 		}
 	}
 

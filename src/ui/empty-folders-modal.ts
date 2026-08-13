@@ -117,12 +117,12 @@ export class EmptyFoldersModal extends Modal {
 				btn
 					.setButtonText('Apply')
 					.setCta()
-					.onClick(async () => {
+					.onClick(() => { void (async () => {
 						this.userMadeChoice = true;
 						const result = await this.applyDecisions();
 						this.resolvePromise?.(result);
 						this.close();
-					})
+					})(); })
 			);
 	}
 
@@ -137,9 +137,9 @@ export class EmptyFoldersModal extends Modal {
 		// Action dropdown
 		const select = row.createEl('select', { cls: 'taggable-tags-folder-action' });
 		
-		const skipOption = select.createEl('option', { value: 'skip', text: 'Skip' });
-		const deleteOption = select.createEl('option', { value: 'delete', text: 'Delete' });
-		const createTagOption = select.createEl('option', { value: 'create-tag', text: 'Create tag' });
+		select.createEl('option', { value: 'skip', text: 'Skip' });
+		select.createEl('option', { value: 'delete', text: 'Delete' });
+		select.createEl('option', { value: 'create-tag', text: 'Create tag' });
 		
 		select.value = this.decisions.get(folder.path) || 'skip';
 		
@@ -182,7 +182,7 @@ export class EmptyFoldersModal extends Modal {
 			
 			if (action === 'delete') {
 				try {
-					await this.plugin.app.vault.delete(folder);
+					await this.plugin.app.fileManager.trashFile(folder);
 					foldersDeleted++;
 				} catch (error) {
 					console.error(`Failed to delete folder ${folder.path}:`, error);

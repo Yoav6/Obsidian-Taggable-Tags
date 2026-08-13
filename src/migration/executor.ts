@@ -5,6 +5,7 @@ import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-tem
 import { mergeTags } from '../sync/merge-tag';
 import { markPluginInitiatedChange } from '../sync/file-rename-sync';
 import { toComparisonKey } from '../utils/tag-naming';
+import { processFrontmatterRecord } from '../utils/frontmatter';
 
 export interface ExecutorError {
 	step: string;
@@ -60,7 +61,7 @@ export function progressStepForOp(op: PlanOp): ProgressStepId {
 
 function yieldToUI(): Promise<void> {
 	return new Promise(resolve => {
-		requestAnimationFrame(() => setTimeout(resolve, 0));
+		window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
 	});
 }
 
@@ -172,14 +173,14 @@ async function applyRenameFile(plugin: TaggableTagsPlugin, from: string, to: str
 async function applyDeleteFolder(plugin: TaggableTagsPlugin, path: string): Promise<void> {
 	const folder = plugin.app.vault.getAbstractFileByPath(path);
 	if (!folder) return;
-	await plugin.app.vault.trash(folder, true);
+	await plugin.app.fileManager.trashFile(folder);
 }
 
 async function applyDeleteFile(plugin: TaggableTagsPlugin, path: string): Promise<void> {
 	const file = plugin.app.vault.getAbstractFileByPath(path);
 	if (!(file instanceof TFile)) return;
 	markPluginInitiatedChange(path);
-	await plugin.app.vault.trash(file, true);
+	await plugin.app.fileManager.trashFile(file);
 }
 
 async function applyCreateTagNote(
@@ -273,7 +274,6 @@ async function applyEditFileTags(
 	const file = plugin.app.vault.getAbstractFileByPath(op.path);
 	if (!(file instanceof TFile)) throw new Error(`File not found: ${op.path}`);
 
-	const cache = plugin.app.metadataCache.getFileCache(file);
 	const content = await plugin.app.vault.read(file);
 	let newContent = content;
 	let modified = false;
@@ -338,8 +338,8 @@ async function editFrontMatterTags(
 	file: TFile,
 	op: Extract<PlanOp, { kind: 'edit-file-tags' }>
 ): Promise<void> {
-	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-		let tags = normalizeFmTags(fm.tags);
+	await processFrontmatterRecord(plugin.app, file, (fm) => {
+		let tags = normalizeFmTags(fm['tags']);
 		if (tags === null && (op.add.length > 0 || op.remove.length > 0 || op.rewrite.length > 0)) {
 			tags = [];
 		}
@@ -375,7 +375,7 @@ async function editFrontMatterTags(
 			}
 		}
 
-		fm.tags = deduped.length === 0 ? [] : deduped;
+		fm['tags'] = deduped.length === 0 ? [] : deduped;
 	});
 }
 

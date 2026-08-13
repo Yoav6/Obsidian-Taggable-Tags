@@ -1,5 +1,6 @@
-import { Modal, Notice, TFile } from 'obsidian';
+import { Modal, Notice, TFile, setIcon } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { readFrontmatterTags } from '../utils/frontmatter';
 
 /**
  * Modal for rearranging the order of tags in the current note's tags property.
@@ -26,38 +27,20 @@ export class RearrangeTagsModal extends Modal {
 
 		contentEl.createEl('h3', { text: 'Rearrange tag order' });
 
-		const descEl = contentEl.createEl('p', { cls: 'setting-item-description' });
+		const descEl = contentEl.createEl('p', { cls: 'setting-item-description tt-modal-desc' });
 		descEl.textContent = 'Drag and drop tags to rearrange their order in the tags property.';
-		descEl.style.marginBottom = '16px';
 
-		// Create the tag list container
-		this.tagListEl = contentEl.createEl('div', { cls: 'rearrange-tags-list' });
-		this.tagListEl.style.cssText = `
-			display: flex;
-			flex-wrap: wrap;
-			gap: 8px;
-			padding: 16px;
-			min-height: 60px;
-			background: var(--background-secondary);
-			border-radius: 8px;
-			margin-bottom: 16px;
-		`;
+		this.tagListEl = contentEl.createDiv({ cls: 'rearrange-tags-list' });
 
 		this.renderTags();
 
-		// Button container
-		const buttonContainer = contentEl.createEl('div', { cls: 'rearrange-tags-buttons' });
-		buttonContainer.style.cssText = `
-			display: flex;
-			justify-content: flex-end;
-			gap: 8px;
-		`;
+		const buttonContainer = contentEl.createDiv({ cls: 'rearrange-tags-buttons' });
 
 		const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
 		cancelBtn.addEventListener('click', () => this.close());
 
 		const confirmBtn = buttonContainer.createEl('button', { text: 'Confirm', cls: 'mod-cta' });
-		confirmBtn.addEventListener('click', () => this.confirmRearrange());
+		confirmBtn.addEventListener('click', () => void this.confirmRearrange());
 
 		// Handle keyboard shortcuts
 		this.scope.register([], 'Escape', () => {
@@ -66,7 +49,7 @@ export class RearrangeTagsModal extends Modal {
 		});
 
 		this.scope.register([], 'Enter', () => {
-			this.confirmRearrange();
+			void this.confirmRearrange();
 			return false;
 		});
 	}
@@ -82,64 +65,25 @@ export class RearrangeTagsModal extends Modal {
 	}
 
 	private createTagChip(tag: string, index: number): HTMLElement {
-		const chip = document.createElement('div');
-		chip.className = 'rearrange-tag-chip';
+		const chip = createDiv({ cls: 'rearrange-tag-chip' });
 		chip.setAttribute('data-index', String(index));
 		chip.draggable = true;
-		chip.style.cssText = `
-			display: inline-flex;
-			align-items: center;
-			gap: 4px;
-			padding: 6px 12px;
-			background: var(--interactive-normal);
-			border-radius: 16px;
-			cursor: grab;
-			user-select: none;
-			transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-			font-size: 14px;
-		`;
 
-		// Hash symbol
 		const hashSpan = chip.createSpan({ cls: 'tag-hash' });
 		hashSpan.textContent = '#';
-		hashSpan.style.cssText = `
-			color: var(--text-accent);
-			font-weight: 500;
-		`;
 
-		// Tag name
 		const nameSpan = chip.createSpan({ cls: 'tag-name' });
 		nameSpan.textContent = tag;
 
-		// Drag handle icon
 		const handleSpan = chip.createSpan({ cls: 'drag-handle' });
-		handleSpan.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>`;
-		handleSpan.style.cssText = `
-			opacity: 0.5;
-			margin-left: 4px;
-			display: flex;
-			align-items: center;
-		`;
+		setIcon(handleSpan, 'grip-vertical');
 
-		// Drag events
 		chip.addEventListener('dragstart', (e) => this.handleDragStart(e, index));
 		chip.addEventListener('dragend', (e) => this.handleDragEnd(e));
 		chip.addEventListener('dragover', (e) => this.handleDragOver(e, index));
 		chip.addEventListener('dragenter', (e) => this.handleDragEnter(e));
 		chip.addEventListener('dragleave', (e) => this.handleDragLeave(e));
 		chip.addEventListener('drop', (e) => this.handleDrop(e, index));
-
-		// Hover effects
-		chip.addEventListener('mouseenter', () => {
-			if (!this.draggedEl) {
-				chip.style.background = 'var(--interactive-hover)';
-			}
-		});
-		chip.addEventListener('mouseleave', () => {
-			if (!this.draggedEl) {
-				chip.style.background = 'var(--interactive-normal)';
-			}
-		});
 
 		return chip;
 	}
@@ -153,26 +97,21 @@ export class RearrangeTagsModal extends Modal {
 			e.dataTransfer.setData('text/plain', String(index));
 		}
 
-		// Style the dragged element
-		setTimeout(() => {
+		window.setTimeout(() => {
 			if (this.draggedEl) {
-				this.draggedEl.style.opacity = '0.5';
-				this.draggedEl.style.cursor = 'grabbing';
+				this.draggedEl.addClass('is-dragging');
 			}
 		}, 0);
 	}
 
 	private handleDragEnd(e: DragEvent): void {
 		const target = e.target as HTMLElement;
-		target.style.opacity = '1';
-		target.style.cursor = 'grab';
+		target.removeClass('is-dragging');
 		
-		// Remove all drag-over styling
 		if (this.tagListEl) {
 			const chips = this.tagListEl.querySelectorAll('.rearrange-tag-chip');
 			chips.forEach((chip) => {
-				(chip as HTMLElement).style.background = 'var(--interactive-normal)';
-				(chip as HTMLElement).style.transform = 'scale(1)';
+				chip.removeClass('is-drop-target');
 			});
 		}
 
@@ -193,8 +132,7 @@ export class RearrangeTagsModal extends Modal {
 		const chip = target.closest('.rearrange-tag-chip') as HTMLElement;
 		
 		if (chip && chip !== this.draggedEl) {
-			chip.style.background = 'var(--interactive-accent)';
-			chip.style.transform = 'scale(1.05)';
+			chip.addClass('is-drop-target');
 		}
 	}
 
@@ -203,8 +141,7 @@ export class RearrangeTagsModal extends Modal {
 		const chip = target.closest('.rearrange-tag-chip') as HTMLElement;
 		
 		if (chip && chip !== this.draggedEl) {
-			chip.style.background = 'var(--interactive-normal)';
-			chip.style.transform = 'scale(1)';
+			chip.removeClass('is-drop-target');
 		}
 	}
 
@@ -231,7 +168,7 @@ export class RearrangeTagsModal extends Modal {
 			this.close();
 		} catch (error) {
 			console.error('Failed to rearrange tags:', error);
-			new Notice(`Failed to rearrange tags: ${error}`);
+			new Notice(`Failed to rearrange tags: ${String(error)}`);
 		}
 	}
 
@@ -321,21 +258,13 @@ export function showRearrangeTagsModal(plugin: TaggableTagsPlugin): void {
 
 	// Get tags from the file's frontmatter
 	const cache = plugin.app.metadataCache.getFileCache(activeFile);
-	if (!cache?.frontmatter?.tags) {
+	const tags = readFrontmatterTags(cache);
+	if (tags.length === 0) {
 		new Notice('This file has no tags property');
 		return;
 	}
 
-	const tags = cache.frontmatter.tags;
-	if (!Array.isArray(tags) || tags.length === 0) {
-		new Notice('This file has no tags');
-		return;
-	}
-
-	// Filter to only flat tags (not nested Obsidian tags with '/')
-	const flatTags = tags.filter((tag: unknown): tag is string => 
-		typeof tag === 'string' && !tag.includes('/')
-	);
+	const flatTags = tags.filter((tag) => !tag.includes('/'));
 
 	if (flatTags.length === 0) {
 		new Notice('This file has no flat tags to rearrange');

@@ -109,7 +109,7 @@ export class MigrationReviewModal extends Modal {
 
 	private yieldToUi(): Promise<void> {
 		return new Promise((resolve) => {
-			requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+			window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
 		});
 	}
 
@@ -243,11 +243,11 @@ export class MigrationReviewModal extends Modal {
 				btn
 					.setButtonText('Continue to preview')
 					.setCta()
-					.onClick(async () => {
+					.onClick(() => { void (async () => {
 						this.showGenerating();
 						await this.yieldToUi();
 						this.finishConflictsStep(this.editableResolutions);
-					})
+					})(); })
 			);
 	}
 

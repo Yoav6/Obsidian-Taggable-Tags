@@ -1,5 +1,6 @@
 import { TFile, TFolder, Notice } from 'obsidian';
 import type TaggableTagsPlugin from '../main';
+import { processFrontmatterRecord, readFrontmatterTags } from '../utils/frontmatter';
 import { generateTagFileContent, addTagPropertiesToFile } from '../utils/tag-template';
 import { findMatchingFolder, findMatchingFileInFolder } from '../utils/name-matching';
 import {
@@ -212,16 +213,9 @@ function findAllNestedTags(plugin: TaggableTagsPlugin): Map<string, NestedTagInf
 		const cache = plugin.app.metadataCache.getFileCache(file);
 		if (!cache) continue;
 
-		if (cache.frontmatter?.tags) {
-			const fmTags = cache.frontmatter.tags;
-			if (Array.isArray(fmTags)) {
-				for (const tag of fmTags) {
-					if (typeof tag === 'string' && tag.includes('/')) {
-						addNestedTag(plugin, nestedTags, tag, file);
-					}
-				}
-			} else if (typeof fmTags === 'string' && fmTags.includes('/')) {
-				addNestedTag(plugin, nestedTags, fmTags, file);
+		for (const tag of readFrontmatterTags(cache)) {
+			if (tag.includes('/')) {
+				addNestedTag(plugin, nestedTags, tag, file);
 			}
 		}
 
@@ -578,7 +572,7 @@ async function ensureParentRelationship(
 	const cache = plugin.app.metadataCache.getFileCache(file);
 	if (!cache?.frontmatter) return;
 
-	const existingTags = cache.frontmatter.tags;
+	const existingTags = readFrontmatterTags(cache);
 	const normalizedParent = plugin.tagIndex.normalizeTag(parentTag);
 
 	if (Array.isArray(existingTags)) {
@@ -674,8 +668,8 @@ async function replaceNestedTagInFile(
 	}
 
 	// Frontmatter via processFrontMatter (handles scalar tags, arrays, and spelling variants)
-	await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-		const tags = normalizeFmTagsValue(fm.tags);
+	await processFrontmatterRecord(plugin.app, file, (fm) => {
+		const tags = normalizeFmTagsValue(fm['tags']);
 		if (tags === null) return;
 
 		let changed = false;
@@ -696,7 +690,7 @@ async function replaceNestedTagInFile(
 					deduped.push(t);
 				}
 			}
-			fm.tags = deduped;
+			fm['tags'] = deduped;
 			modified = true;
 		}
 	});
