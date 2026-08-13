@@ -1079,7 +1079,9 @@ export class TagExplorerView extends ItemView {
 		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
 
 		// Tag name container
-		const tagNameContainer = tagTitle.createSpan({ cls: 'tag-name' });
+		const tagNameContainer = tagTitle.createSpan({
+			cls: group.tags.length === 1 ? 'tag-name' : 'tag-name tag-name-combined',
+		});
 		
 		if (group.tags.length === 1) {
 			// Single tag - simple clickable name

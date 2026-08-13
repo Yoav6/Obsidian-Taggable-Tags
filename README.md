@@ -1,4 +1,4 @@
-**This plugin is in alpha, test it in a test vault or a copy of your vault before installing it in any importent vault**
+**This plugin is feature-complete, but still in testing. Test it in a test vault or a copy of your vault before installing it in any importent vault**
 
 # Taggable Tags
 
@@ -79,7 +79,7 @@ tags: [programming-languages, data-science-tools]
 More obscure features and details are covered in Q&A.md
 
 ## Roadmap
-- **Migration**: get the migration feature working. This is the most important feature right now. Without it the plugin won't be very useful for existing vaults.
+- There are currently no additional major planned features
 
 ### Commands
 

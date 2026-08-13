@@ -567,12 +567,14 @@ If your plugin does not need CSS, delete this file.
 }
 
 /* Tag explorer view */
+.workspace-leaf-content[data-type="taggable-tags-explorer"] .view-content.taggable-tags-explorer {
+	padding: 0;
+}
 .taggable-tags-explorer {
 	height: 100%;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	padding: 0 !important;
 }
 /* Fixed header container - does not scroll */
 .taggable-tags-explorer .fixed-header {
@@ -592,12 +594,12 @@ If your plugin does not need CSS, delete this file.
 /* Remove padding/margin from containers to eliminate scrollbar gap */
 .taggable-tags-explorer .nav-files-container {
 	position: relative;
-	padding: 0 !important;
-	margin: 0 !important;
+	padding: 0;
+	margin: 0;
 }
 .taggable-tags-explorer .nav-folder.mod-root {
-	padding: 0 !important;
-	margin: 0 !important;
+	padding: 0;
+	margin: 0;
 }
 .taggable-tags-explorer .virtual-list-spacer {
 	pointer-events: none;
@@ -614,16 +616,16 @@ If your plugin does not need CSS, delete this file.
 	overflow: hidden;
 }
 .taggable-tags-explorer .virtual-row > .tree-item {
-	margin-bottom: 0 !important;
+	margin-bottom: 0;
 }
 .taggable-tags-explorer .tree-item {
-	padding-right: 0 !important;
-	margin-right: 0 !important;
+	padding-right: 0;
+	margin-right: 0;
 	margin-bottom: 4px;
 }
 .taggable-tags-explorer .tree-item-children {
-	padding-right: 0 !important;
-	margin-right: 0 !important;
+	padding-right: 0;
+	margin-right: 0;
 }
 .taggable-tags-explorer .nav-header {
 	padding-top: 6px;
@@ -720,8 +722,8 @@ If your plugin does not need CSS, delete this file.
 	color: var(--text-muted);
 	cursor: default;
 }
-/* When hovering the container, don't underline everything */
-.taggable-tags-explorer .tag-name:has(.tag-name-part):hover {
+/* Combined tag names underline each part, not the whole row */
+.taggable-tags-explorer .tag-name-combined:hover {
 	text-decoration: none;
 }
 /* Tags without corresponding files - grayed out */
@@ -733,8 +735,9 @@ If your plugin does not need CSS, delete this file.
 	opacity: 0.5;
 }
 /* List mode items - no extra padding, with icon */
-.taggable-tags-explorer .list-mode-item {
-	padding-left: 4px !important;
+.taggable-tags-explorer .tree-item-self.list-mode-item {
+	padding-left: 4px;
+	padding-inline-start: 4px;
 }
 .taggable-tags-explorer .list-mode-icon {
 	display: flex;
@@ -759,19 +762,26 @@ If your plugin does not need CSS, delete this file.
 }
 /* Inline rename input - matches native file explorer styling */
 .taggable-tags-explorer .rename-input {
-	all: unset;
+	appearance: none;
 	background: transparent;
+	border: none;
+	outline: none;
 	box-shadow: 0 0 0 2px var(--interactive-accent);
 	border-radius: 5px;
 	padding: 0 1px;
+	margin: 0;
 	font-size: inherit;
 	font-family: inherit;
+	font-weight: inherit;
+	line-height: inherit;
 	color: var(--text-muted);
 	width: 100%;
+	min-width: 0;
 }
 /* Highlighted state */
-.taggable-tags-explorer .is-highlighted {
-	background-color: var(--text-selection) !important;
+.taggable-tags-explorer .tree-item-self.is-highlighted,
+.taggable-tags-explorer .tree-item-self.is-highlighted:hover {
+	background-color: var(--text-selection);
 }
 /* Multi-select state */
 .taggable-tags-explorer .tree-item-self.is-selected {
