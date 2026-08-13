@@ -1,4 +1,4 @@
-import { App, TFile, normalizePath } from 'obsidian';
+import { App, TFile, normalizePath, type CachedMetadata } from 'obsidian';
 import type { TaggableTagsSettings } from '../settings';
 import {
 	toCanonicalTagName,
@@ -524,6 +524,91 @@ export class TagIndex {
 			}
 		}
 		return tags;
+	}
+
+	/**
+	 * Whether a metadata update would change what the explorer shows.
+	 * Opening a file re-parses it and fires metadataCache.changed even when
+	 * tags, tag-file identity, exceptions, and attachment links are unchanged.
+	 */
+	hasExplorerRelevantChanges(file: TFile, cache: CachedMetadata): boolean {
+		if (this.isTagRegistryNote(file)) {
+			return false;
+		}
+
+		const newTagProp = cache.frontmatter?.[this.settings.tagPropertyName];
+		const newTagName = (typeof newTagProp === 'string' && newTagProp.trim())
+			? this.normalizeTag(newTagProp.trim())
+			: null;
+		const oldTagName = this.fileToTag.get(file.path) ?? null;
+		if (oldTagName === null && newTagName !== null) return true;
+		if (oldTagName !== null && newTagName === null) return true;
+		if (oldTagName && newTagName && this.key(oldTagName) !== this.key(newTagName)) return true;
+
+		const isTagFile = newTagName !== null;
+		const oldTagKeys = new Set<string>();
+		for (const [k, files] of this.tagToFiles) {
+			for (const indexed of files) {
+				if (indexed.path === file.path) {
+					oldTagKeys.add(k);
+					break;
+				}
+			}
+		}
+
+		const newTagKeys = new Set<string>();
+		const fmTags = cache.frontmatter?.tags;
+		if (Array.isArray(fmTags)) {
+			for (const tag of fmTags) {
+				if (typeof tag === 'string' && !tag.includes('/')) {
+					newTagKeys.add(this.key(this.normalizeTag(tag)));
+				}
+			}
+		}
+		// Tag files only contribute frontmatter tags (parents) to the index.
+		if (!isTagFile && cache.tags) {
+			for (const tagCache of cache.tags) {
+				let tagName = tagCache.tag.startsWith('#') ? tagCache.tag.slice(1) : tagCache.tag;
+				if (tagName.includes('/')) continue;
+				newTagKeys.add(this.key(this.normalizeTag(tagName)));
+			}
+		}
+
+		if (!this.sameStringSet(oldTagKeys, newTagKeys)) return true;
+
+		if (oldTagName || newTagName) {
+			const k = this.key((newTagName ?? oldTagName)!);
+			const oldExceptions = this.tagExceptions.get(k) ?? new Set<string>();
+			const oldExclusive = this.exclusiveTags.has(k);
+			const parsed = this.parseExceptionProperty(
+				cache.frontmatter?.[this.settings.exceptionToPropertyName]
+			);
+			if (oldExclusive !== parsed.isExclusive) return true;
+			if (!this.sameStringSet(oldExceptions, parsed.tags)) return true;
+		}
+
+		const oldAtt = new Set(
+			(this.noteToAttachments.get(file.path) ?? []).map(f => f.path)
+		);
+		const newAtt = new Set<string>();
+		const resolved = this.app.metadataCache.resolvedLinks[file.path] ?? {};
+		for (const targetPath of Object.keys(resolved)) {
+			const dest = this.app.vault.getAbstractFileByPath(targetPath);
+			if (dest instanceof TFile && dest.extension !== 'md') {
+				newAtt.add(dest.path);
+			}
+		}
+		if (!this.sameStringSet(oldAtt, newAtt)) return true;
+
+		return false;
+	}
+
+	private sameStringSet(a: Set<string>, b: Set<string>): boolean {
+		if (a.size !== b.size) return false;
+		for (const value of a) {
+			if (!b.has(value)) return false;
+		}
+		return true;
 	}
 
 	/**

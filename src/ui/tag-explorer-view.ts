@@ -15,6 +15,26 @@ interface TagOrGroup {
 	displayName: string;  // e.g., "history" or "history + fiction"
 }
 
+/**
+ * One row of the explorer, flattened out of the tag hierarchy.
+ * Rows are built without touching the DOM, so only those scrolled into view
+ * need elements. Indentation is carried by each row's own left padding, which
+ * is why nesting can be dropped without changing how the tree looks.
+ */
+interface ExplorerRow {
+	/** Selection key, or null for rows that cannot be selected. */
+	key: string | null;
+	/** Tag names this row represents (for tag rows). */
+	tags?: string[];
+	render: (container: HTMLElement) => void;
+}
+
+/** Row height in pixels. Must match .virtual-row in the injected styles. */
+const ROW_HEIGHT = 26;
+
+/** Rows rendered above and below the viewport, to cover fast scrolling. */
+const ROW_OVERSCAN = 8;
+
 /** A place where the active file appears in the explorer */
 interface FileInstance {
 	/** Unique key matching data-instance-key on the rendered element */
@@ -34,6 +54,8 @@ export class TagExplorerView extends ItemView {
 	private filterTags: Set<string> = new Set();
 	// Exclude tags - hide descendants of these tags from results
 	private excludeTags: Set<string> = new Set();
+	// After refresh, put the cursor back in the filter textbox
+	private focusFilterInputAfterRefresh = false;
 	// Style element (kept outside contentEl so it persists across refreshes)
 	private styleEl: HTMLStyleElement | null = null;
 	// View mode: tree (hierarchical) or list (flat)
@@ -50,6 +72,10 @@ export class TagExplorerView extends ItemView {
 	// Multi-select state keyed by instance key (and file path for file rows)
 	private selectedItems: Set<string> = new Set();
 	private firstSelectedKey: string | null = null;
+	// Every row currently in the view, including those scrolled out of sight
+	private rows: ExplorerRow[] = [];
+	// Re-renders the visible window of rows; set while a row list is mounted
+	private renderRowWindow: (() => void) | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: TaggableTagsPlugin) {
 		super(leaf);
@@ -104,13 +130,12 @@ export class TagExplorerView extends ItemView {
 		) as HTMLElement | null;
 	}
 
-	/** All visible selectable rows in flat DOM order */
+	/** All selectable rows in visual order, including those scrolled out of the window. */
 	private getVisibleSelectableKeys(): string[] {
 		const keys: string[] = [];
-		this.contentEl.querySelectorAll('.tree-item-self[data-instance-key]').forEach(el => {
-			const key = this.getSelectionKey(el as HTMLElement);
-			if (key) keys.push(key);
-		});
+		for (const row of this.rows) {
+			if (row.key) keys.push(row.key);
+		}
 		return keys;
 	}
 
@@ -171,19 +196,8 @@ export class TagExplorerView extends ItemView {
 			el.removeClass('is-selected');
 		});
 
-		const visibleKeys = new Set(this.getVisibleSelectableKeys());
-		for (const key of [...this.selectedItems]) {
-			if (!visibleKeys.has(key)) {
-				this.selectedItems.delete(key);
-				continue;
-			}
+		for (const key of this.selectedItems) {
 			this.findSelectableElement(key)?.addClass('is-selected');
-		}
-
-		if (this.firstSelectedKey && !this.selectedItems.has(this.firstSelectedKey)) {
-			this.firstSelectedKey = this.selectedItems.size > 0
-				? this.selectedItems.values().next().value ?? null
-				: null;
 		}
 	}
 
@@ -292,10 +306,7 @@ export class TagExplorerView extends ItemView {
 	private isOnlyTagsSelected(): boolean {
 		if (this.selectedItems.size === 0) return false;
 		for (const key of this.selectedItems) {
-			const el = this.findSelectableElement(key);
-			if (!el) return false;
-			const instanceKey = el.getAttribute('data-instance-key') ?? '';
-			if (!instanceKey.startsWith('tag:')) return false;
+			if (!key.startsWith('tag:')) return false;
 		}
 		return true;
 	}
@@ -304,11 +315,10 @@ export class TagExplorerView extends ItemView {
 	private getSelectedTags(): string[] {
 		const tags = new Set<string>();
 		for (const key of this.selectedItems) {
-			const el = this.findSelectableElement(key);
-			if (!el) continue;
-			const tagAttr = el.getAttribute('data-tag') ?? '';
-			for (const tag of tagAttr.split(',')) {
-				if (tag) tags.add(tag);
+			const row = this.rows.find(r => r.key === key);
+			if (!row?.tags) continue;
+			for (const tag of row.tags) {
+				tags.add(tag);
 			}
 		}
 		return Array.from(tags);
@@ -320,28 +330,32 @@ export class TagExplorerView extends ItemView {
 		const seenPaths = new Set<string>();
 
 		for (const key of this.selectedItems) {
-			const el = this.findSelectableElement(key);
-			if (!el) return null;
+			const parsed = this.parseFileSelectionKey(key);
+			if (!parsed) return null;
 
-			const instanceKey = el.getAttribute('data-instance-key') ?? '';
-			if (!instanceKey.startsWith('file:') && !instanceKey.startsWith('attachment:')) {
-				return null;
-			}
-
-			const path = el.getAttribute('data-path');
-			if (!path) return null;
-
-			const file = this.app.vault.getAbstractFileByPath(path);
+			const file = this.app.vault.getAbstractFileByPath(parsed.path);
 			if (!(file instanceof TFile)) return null;
 			if (this.plugin.tagIndex.isTagFile(file)) return null;
 
-			if (!seenPaths.has(path)) {
-				seenPaths.add(path);
+			if (!seenPaths.has(parsed.path)) {
+				seenPaths.add(parsed.path);
 				files.push(file);
 			}
 		}
 
 		return files.length > 0 ? files : null;
+	}
+
+	private parseFileSelectionKey(key: string): { instanceKey: string; path: string } | null {
+		const pipeIndex = key.indexOf('|');
+		if (pipeIndex === -1) return null;
+		const instanceKey = key.slice(0, pipeIndex);
+		if (!instanceKey.startsWith('file:') && !instanceKey.startsWith('attachment:')) {
+			return null;
+		}
+		const path = key.slice(pipeIndex + 1);
+		if (!path) return null;
+		return { instanceKey, path };
 	}
 
 	/**
@@ -356,34 +370,26 @@ export class TagExplorerView extends ItemView {
 		let hasFile = false;
 
 		for (const key of this.selectedItems) {
-			const el = this.findSelectableElement(key);
-			if (!el) return null;
-
-			const instanceKey = el.getAttribute('data-instance-key') ?? '';
-			if (instanceKey.startsWith('tag:')) {
+			if (key.startsWith('tag:')) {
 				hasTag = true;
-				const tagAttr = el.getAttribute('data-tag') ?? '';
-				for (const tag of tagAttr.split(',')) {
-					if (tag) tags.add(tag);
+				const row = this.rows.find(r => r.key === key);
+				if (!row?.tags) return null;
+				for (const tag of row.tags) {
+					tags.add(tag);
 				}
 				continue;
 			}
 
-			if (instanceKey.startsWith('file:') || instanceKey.startsWith('attachment:')) {
-				const path = el.getAttribute('data-path');
-				if (!path) return null;
-				const file = this.app.vault.getAbstractFileByPath(path);
-				if (!(file instanceof TFile)) return null;
-				if (this.plugin.tagIndex.isTagFile(file)) return null;
-				hasFile = true;
-				if (!seenPaths.has(path)) {
-					seenPaths.add(path);
-					files.push(file);
-				}
-				continue;
+			const parsed = this.parseFileSelectionKey(key);
+			if (!parsed) return null;
+			const file = this.app.vault.getAbstractFileByPath(parsed.path);
+			if (!(file instanceof TFile)) return null;
+			if (this.plugin.tagIndex.isTagFile(file)) return null;
+			hasFile = true;
+			if (!seenPaths.has(parsed.path)) {
+				seenPaths.add(parsed.path);
+				files.push(file);
 			}
-
-			return null;
 		}
 
 		if (!hasTag || !hasFile) return null;
@@ -467,7 +473,10 @@ export class TagExplorerView extends ItemView {
 
 		// Listen for changes to rebuild
 		this.registerEvent(
-			this.plugin.app.metadataCache.on('changed', () => {
+			this.plugin.app.metadataCache.on('changed', (file, _data, cache) => {
+				if (!this.plugin.tagIndex.hasExplorerRelevantChanges(file, cache)) {
+					return;
+				}
 				this.debouncedRefresh();
 			})
 		);
@@ -518,8 +527,15 @@ export class TagExplorerView extends ItemView {
 	}
 
 	async refresh(): Promise<void> {
-		// Rebuild the tag index
 		await this.plugin.tagIndex.rebuild();
+		this.redraw();
+	}
+
+	/**
+	 * Rebuild the explorer UI from the current index without scanning the vault.
+	 * Used for expand/collapse, view-mode changes, and filters.
+	 */
+	private redraw(): void {
 
 		// Save scroll position before clearing
 		const oldScrollContainer = this.contentEl.querySelector('.scroll-container');
@@ -528,6 +544,8 @@ export class TagExplorerView extends ItemView {
 		// Clear and re-render
 		this.contentEl.empty();
 		this.tagElements.clear();
+		this.rows = [];
+		this.renderRowWindow = null;
 
 		// Create fixed header container that wraps both nav-header and filter-bar
 		const fixedHeader = this.contentEl.createEl('div', { cls: 'fixed-header' });
@@ -537,8 +555,6 @@ export class TagExplorerView extends ItemView {
 		const headerButtons = header.createEl('div', { cls: 'nav-buttons-container' });
 		
 		// Toggle expand/collapse button
-		const allTags = this.plugin.tagIndex.getAllTags();
-		// Check if anything is expanded (simplified check)
 		const hasExpanded = this.expandedPaths.size > 0;
 		const toggleBtn = headerButtons.createEl('div', { 
 			cls: 'clickable-icon nav-action-button', 
@@ -552,7 +568,7 @@ export class TagExplorerView extends ItemView {
 				// Expand all tags at all positions - we'll collect paths during render
 				this.expandAllTagsRecursively();
 			}
-			this.refresh();
+			this.redraw();
 		});
 
 		// New note button
@@ -594,7 +610,7 @@ export class TagExplorerView extends ItemView {
 				} else {
 					this.viewMode = this.viewMode === 'tree' ? 'list' : 'tree';
 				}
-				this.refresh();
+				this.redraw();
 			});
 		}
 
@@ -613,7 +629,7 @@ export class TagExplorerView extends ItemView {
 			} else {
 				this.contentMode = 'all';
 			}
-			this.refresh();
+			this.redraw();
 		});
 
 		// Reveal / cycle active file instances
@@ -648,11 +664,84 @@ export class TagExplorerView extends ItemView {
 		// Determine what content to show based on content mode
 		const showTags = this.contentMode !== 'files';
 		const showFiles = this.contentMode !== 'tags';
+		const isFlatList = this.contentMode === 'files' || this.viewMode === 'list';
+		const allFlatFiles = showFiles && isFlatList ? this.getAllFilesForDisplay(tagsToRender, untaggedFiles) : [];
+		const allFlatTags = showTags && this.viewMode === 'list' ? this.getAllTagsForDisplay(tagsToRender.tags) : [];
 		
-		const hasContent = (showTags && tagsToRender.tags.length > 0) || 
-			(showFiles && (tagsToRender.files.length > 0 || untaggedFiles.length > 0 || rootAttachments.length > 0));
-		
-		if (!hasContent) {
+		// Flatten everything visible into a row list. Building rows touches no DOM,
+		// so only the rows scrolled into view are ever created as elements.
+		const rows: ExplorerRow[] = [];
+
+		if (this.contentMode === 'files') {
+			// Only files mode - flat list of regular files (no tag notes, no untagged group)
+			for (const file of allFlatFiles.sort((a, b) => a.basename.localeCompare(b.basename))) {
+				this.collectFileRow(rows, file, 0, true, 'file:__flat__');
+			}
+		} else if (this.viewMode === 'list') {
+			// List mode - flat list without nesting, interleaved alphabetically
+			const items: Array<{ type: 'tag' | 'file', name: string, tag?: string, file?: TFile }> = [];
+			for (const tag of allFlatTags) {
+				items.push({ type: 'tag', name: tag, tag });
+			}
+			for (const file of allFlatFiles) {
+				items.push({ type: 'file', name: file.basename, file });
+			}
+
+			// Sort alphabetically by name
+			items.sort((a, b) => a.name.localeCompare(b.name));
+
+			for (const item of items) {
+				if (item.type === 'tag' && item.tag) {
+					const tag = item.tag;
+					rows.push({
+						key: `tag:__flat__:${tag}`,
+						tags: [tag],
+						render: (container) => this.renderFlatTagNode(container, tag)
+					});
+				} else if (item.type === 'file' && item.file) {
+					this.collectFileRow(rows, item.file, 0, true, 'file:__flat__');
+				}
+			}
+		} else {
+			// Tree mode - hierarchical rows
+			if (showTags) {
+				const groups = this.groupTagsByChildren(tagsToRender.tags);
+				for (const group of groups) {
+					this.collectTagOrGroupRows(rows, group, 0);
+				}
+			}
+			// Files directly under root if filtering (and showing files)
+			if (showFiles && this.filterTags.size > 0) {
+				for (const file of tagsToRender.files.sort((a, b) => a.basename.localeCompare(b.basename))) {
+					this.collectFileRow(rows, file, 0, false, 'file:__root__');
+				}
+			}
+		}
+
+		// Untagged files at the bottom (tree view only; files-only mixes them into the flat list)
+		if (showFiles && untaggedFiles.length > 0 && this.viewMode === 'tree' && this.contentMode !== 'files') {
+			if (this.plugin.settings.groupUntaggedFiles) {
+				// Collapsible "Untagged" group
+				this.collectUntaggedRows(rows, untaggedFiles);
+			} else {
+				// Files directly at top level
+				for (const file of untaggedFiles) {
+					this.collectFileRow(rows, file, 0, false, 'file:__root__');
+				}
+				// Attachments referenced by untagged files, shown alongside them
+				const untaggedAttachments = this.collectAlongsideAttachments(untaggedFiles);
+				this.collectAttachmentRows(rows, untaggedAttachments, '__attachments__:__untagged__', 0);
+			}
+		}
+
+		// Vault-root attachments (tree view only; flat views mix them into the file list)
+		if (this.plugin.settings.displayAttachments && showFiles && rootAttachments.length > 0 && this.viewMode === 'tree' && this.contentMode !== 'files') {
+			this.collectAttachmentRows(rows, rootAttachments, '__attachments__:root', 0);
+		}
+
+		this.rows = rows;
+
+		if (rows.length === 0) {
 			// Render empty state outside the tree to avoid hover/click issues
 			if (this.filterTags.size > 0) {
 				scrollContainer.createEl('div', { 
@@ -666,81 +755,11 @@ export class TagExplorerView extends ItemView {
 				});
 			}
 		} else {
-			// Create the tree container only when there's content
 			const treeContainer = scrollContainer.createEl('div', { cls: 'nav-files-container node-insert-event' });
-			const tree = treeContainer.createEl('div', { cls: 'tree-item nav-folder mod-root' });
-			
-			if (this.contentMode === 'files') {
-				// Only files mode - show flat list of all files
-				const allFiles = this.getAllFilesForDisplay(tagsToRender);
-				for (const file of allFiles.sort((a, b) => a.basename.localeCompare(b.basename))) {
-					this.renderFileNode(tree, file, 0, true, 'file:__flat__');
-				}
-			} else if (this.viewMode === 'list') {
-				// List mode - flat list without nesting, interleaved alphabetically
-				const allTags = showTags ? this.getAllTagsForDisplay(tagsToRender.tags) : [];
-				const allFiles = showFiles ? this.getAllFilesForDisplay(tagsToRender) : [];
-				
-				// Create combined list with type info for sorting
-				const items: Array<{ type: 'tag' | 'file', name: string, tag?: string, file?: TFile }> = [];
-				for (const tag of allTags) {
-					items.push({ type: 'tag', name: tag, tag });
-				}
-				for (const file of allFiles) {
-					items.push({ type: 'file', name: file.basename, file });
-				}
-				
-				// Sort alphabetically by name
-				items.sort((a, b) => a.name.localeCompare(b.name));
-				
-				// Render in sorted order
-				for (const item of items) {
-					if (item.type === 'tag' && item.tag) {
-						this.renderFlatTagNode(tree, item.tag);
-					} else if (item.type === 'file' && item.file) {
-						this.renderFileNode(tree, item.file, 0, true, 'file:__flat__');
-					}
-				}
-			} else {
-				// Tree mode - hierarchical rendering
-				if (showTags) {
-					const groups = this.groupTagsByChildren(tagsToRender.tags);
-					for (const group of groups) {
-						this.renderTagOrGroupNode(tree, group, 0);
-					}
-				}
-				// Render files directly under root if filtering (and showing files)
-				if (showFiles && this.filterTags.size > 0) {
-					for (const file of tagsToRender.files.sort((a, b) => a.basename.localeCompare(b.basename))) {
-						this.renderFileNode(tree, file, 0, false, 'file:__root__');
-					}
-				}
-			}
-			
-			// Render untagged files at the bottom (only when not filtering and showing files)
-			if (showFiles && untaggedFiles.length > 0 && this.viewMode === 'tree') {
-				if (this.plugin.settings.groupUntaggedFiles) {
-					// Render as a collapsible "Untagged" group
-					this.renderUntaggedGroup(tree, untaggedFiles);
-				} else {
-					// Render files directly at top level
-					for (const file of untaggedFiles) {
-						this.renderFileNode(tree, file, 0, false, 'file:__root__');
-					}
-					// Attachments referenced by untagged files, shown alongside them
-					const untaggedAttachments = this.collectAlongsideAttachments(untaggedFiles);
-					this.renderAttachmentGroup(tree, untaggedAttachments, '__attachments__:__untagged__', 0);
-				}
-			}
-
-			// Render vault-root attachments (only when not filtering and showing files)
-			if (this.plugin.settings.displayAttachments && showFiles && rootAttachments.length > 0 && this.viewMode === 'tree') {
-				this.renderAttachmentGroup(tree, rootAttachments, '__attachments__:root', 0);
-			}
+			this.mountRowWindow(scrollContainer, treeContainer, rows);
 		}
 
 		// Restore scroll position after re-render (unless we're revealing an instance)
-		const newScrollContainer = this.contentEl.querySelector('.scroll-container');
 		if (this.pendingRevealKey) {
 			const key = this.pendingRevealKey;
 			const filePath = this.pendingRevealFilePath;
@@ -748,11 +767,52 @@ export class TagExplorerView extends ItemView {
 			this.pendingRevealFilePath = null;
 			// Apply immediately so the next paint already shows the target position
 			this.applyRevealHighlight(key, filePath);
-		} else if (newScrollContainer && savedScrollTop > 0) {
-			newScrollContainer.scrollTop = savedScrollTop;
+		} else if (savedScrollTop > 0) {
+			scrollContainer.scrollTop = savedScrollTop;
+			this.paintVisibleRows();
 		}
 
 		this.applySelectionStyles();
+	}
+
+	/**
+	 * Mount a virtualized window over `rows` so only the rows in (and near) the
+	 * viewport exist as DOM nodes.
+	 */
+	private mountRowWindow(scrollContainer: HTMLElement, treeContainer: HTMLElement, rows: ExplorerRow[]): void {
+		const spacer = treeContainer.createEl('div', { cls: 'virtual-list-spacer' });
+		const windowEl = treeContainer.createEl('div', { cls: 'virtual-list-window' });
+		spacer.style.height = `${rows.length * ROW_HEIGHT}px`;
+
+		let lastStart = -1;
+		let lastEnd = -1;
+
+		const renderWindow = () => {
+			const viewportHeight = scrollContainer.clientHeight || 400;
+			const start = Math.max(0, Math.floor(scrollContainer.scrollTop / ROW_HEIGHT) - ROW_OVERSCAN);
+			const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + ROW_OVERSCAN * 2;
+			const end = Math.min(rows.length, start + visibleCount);
+			if (start === lastStart && end === lastEnd) return;
+			lastStart = start;
+			lastEnd = end;
+
+			windowEl.style.top = `${start * ROW_HEIGHT}px`;
+			windowEl.empty();
+			for (let i = start; i < end; i++) {
+				const rowEl = windowEl.createEl('div', { cls: 'virtual-row' });
+				rows[i].render(rowEl);
+			}
+			this.applySelectionStyles();
+		};
+
+		this.renderRowWindow = renderWindow;
+		scrollContainer.addEventListener('scroll', renderWindow, { passive: true });
+		renderWindow();
+		requestAnimationFrame(renderWindow);
+	}
+
+	private paintVisibleRows(): void {
+		this.renderRowWindow?.();
 	}
 
 	/**
@@ -776,26 +836,81 @@ export class TagExplorerView extends ItemView {
 	}
 
 	/**
-	 * Get all files for display in list/files-only mode
+	 * Get all files for display in list/files-only mode.
+	 * Uses index lookups rather than walking the tag tree, so refresh stays cheap.
+	 * Files-only mode omits tag notes. Untagged files and attachments are mixed in.
 	 */
-	private getAllFilesForDisplay(tagsToRender: { tags: string[], files: TFile[] }): TFile[] {
-		const allFiles = new Set<TFile>();
-		
+	private getAllFilesForDisplay(
+		tagsToRender: { tags: string[], files: TFile[] },
+		untaggedFiles: TFile[]
+	): TFile[] {
+		const result = new Map<string, TFile>();
+		const add = (file: TFile) => {
+			if (this.contentMode === 'files' && this.plugin.tagIndex.isTagFile(file)) {
+				return;
+			}
+			result.set(file.path, file);
+		};
+
 		if (this.filterTags.size > 0) {
-			// When filtering, use the filtered files
+			const visited = new Set<string>();
+			const addFilesUnderTag = (tag: string) => {
+				if (visited.has(tag)) return;
+				visited.add(tag);
+				for (const file of this.plugin.tagIndex.getFilesWithTag(tag)) {
+					add(file);
+				}
+				for (const child of this.plugin.tagIndex.getChildTags(tag)) {
+					addFilesUnderTag(child);
+				}
+			};
+			for (const tag of tagsToRender.tags) {
+				addFilesUnderTag(tag);
+			}
 			for (const file of tagsToRender.files) {
-				allFiles.add(file);
+				add(file);
 			}
 		} else {
-			// No filtering - get all files with tags
 			for (const tag of this.plugin.tagIndex.getAllTags()) {
 				for (const file of this.plugin.tagIndex.getFilesWithTag(tag)) {
-					allFiles.add(file);
+					add(file);
+				}
+			}
+			for (const file of untaggedFiles) {
+				add(file);
+			}
+		}
+
+		if (this.plugin.settings.displayAttachments) {
+			if (this.filterTags.size > 0) {
+				for (const file of this.collectAlongsideAttachments([...result.values()])) {
+					add(file);
+				}
+				const visited = new Set<string>();
+				const addFolderAttachments = (tag: string) => {
+					if (visited.has(tag)) return;
+					visited.add(tag);
+					for (const file of this.plugin.tagIndex.getFolderAttachmentsForTag(tag)) {
+						add(file);
+					}
+					for (const child of this.plugin.tagIndex.getChildTags(tag)) {
+						addFolderAttachments(child);
+					}
+				};
+				for (const tag of tagsToRender.tags) {
+					addFolderAttachments(tag);
+				}
+				for (const tag of this.filterTags) {
+					addFolderAttachments(tag);
+				}
+			} else {
+				for (const file of this.plugin.tagIndex.getAllAttachments()) {
+					add(file);
 				}
 			}
 		}
-		
-		return Array.from(allFiles);
+
+		return Array.from(result.values());
 	}
 
 	/**
@@ -856,11 +971,12 @@ export class TagExplorerView extends ItemView {
 	}
 
 	/**
-	 * Render a tag or group of combined tags
+	 * Collect the rows for a tag (or group of combined tags) and, when expanded,
+	 * everything nested beneath it.
 	 * @param ancestors - Array of ancestor tag names (for building tree path)
 	 * @param ancestorSet - Set of tags in the current ancestor path (for cycle detection)
 	 */
-	private renderTagOrGroupNode(container: HTMLElement, group: TagOrGroup, depth: number, ancestors: string[] = [], ancestorSet: Set<string> = new Set()): void {
+	private collectTagOrGroupRows(rows: ExplorerRow[], group: TagOrGroup, depth: number, ancestors: string[] = [], ancestorSet: Set<string> = new Set()): void {
 		// Use the first tag for expansion state and children lookup
 		const primaryTag = group.tags[0];
 		
@@ -895,15 +1011,58 @@ export class TagExplorerView extends ItemView {
 		const hasTagFile = this.plugin.tagIndex.getTagFile(primaryTag) !== null;
 		const applyParentNoFile = !isCombined && !hasTagFile;
 
+		rows.push({
+			key: `tag:${treePath}`,
+			tags: group.tags,
+			render: (container) => this.renderTagRow(
+				container, group, depth, ancestors, treePath, isExpanded, hasChildren, applyParentNoFile
+			)
+		});
+
+		// Collect children if expanded
+		if (isExpanded && hasChildren) {
+			// Build the new ancestor path including all tags in this group
+			const newAncestors = [...ancestors, primaryTag];
+			const newAncestorSet = new Set(ancestorSet);
+			for (const tag of group.tags) {
+				newAncestorSet.add(tag);
+			}
+
+			// Child tags first (grouped)
+			const childGroups = this.groupTagsByChildren(children);
+			for (const childGroup of childGroups) {
+				this.collectTagOrGroupRows(rows, childGroup, depth + 1, newAncestors, newAncestorSet);
+			}
+
+			// Then files
+			for (const file of files.sort((a, b) => a.basename.localeCompare(b.basename))) {
+				this.collectFileRow(rows, file, depth + 1, false, `file:${treePath}`);
+			}
+
+			// Then attachments (folder-connected + referenced alongside notes)
+			this.collectAttachmentRows(rows, attachmentsHere, `__attachments__:${treePath}`, depth + 1);
+		}
+	}
+
+	/**
+	 * Render the row for a tag or group of combined tags.
+	 */
+	private renderTagRow(
+		container: HTMLElement,
+		group: TagOrGroup,
+		depth: number,
+		ancestors: string[],
+		treePath: string,
+		isExpanded: boolean,
+		hasChildren: boolean,
+		applyParentNoFile: boolean
+	): void {
+		const primaryTag = group.tags[0];
+
 		// Create the tag item
 		const tagItem = container.createEl('div', { 
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}${!hasChildren ? ' is-collapsed' : ''}${applyParentNoFile ? ' tag-no-file' : ''}`
 		});
-		
-		// Store reference for navigation (for all tags in the group)
-		for (const tag of group.tags) {
-			this.tagElements.set(tag, tagItem);
-		}
 
 		const tagTitle = tagItem.createEl('div', { 
 			cls: 'tree-item-self is-clickable tag-item',
@@ -979,7 +1138,7 @@ export class TagExplorerView extends ItemView {
 			if (this.handleSelectionClick(e, tagTitle)) return;
 			// Toggle expansion for this specific tree position
 			this.togglePathExpansion(treePath, !isExpanded);
-			this.refresh();
+			this.redraw();
 		});
 
 		// Right click handler - different behavior for single vs combined tags
@@ -996,36 +1155,14 @@ export class TagExplorerView extends ItemView {
 			}
 		});
 
-		// Render children if expanded
-		if (isExpanded && hasChildren) {
-			const childrenContainer = tagItem.createEl('div', { cls: 'tree-item-children nav-folder-children' });
-
-			// Build the new ancestor path including all tags in this group
-			const newAncestors = [...ancestors, primaryTag];
-			const newAncestorSet = new Set(ancestorSet);
-			for (const tag of group.tags) {
-				newAncestorSet.add(tag);
-			}
-
-			// Render child tags first (grouped)
-			const childGroups = this.groupTagsByChildren(children);
-			for (const childGroup of childGroups) {
-				this.renderTagOrGroupNode(childrenContainer, childGroup, depth + 1, newAncestors, newAncestorSet);
-			}
-
-			// Then render files
-			for (const file of files.sort((a, b) => a.basename.localeCompare(b.basename))) {
-				this.renderFileNode(childrenContainer, file, depth + 1, false, `file:${treePath}`);
-			}
-
-			// Then render attachments (folder-connected + referenced alongside notes)
-			this.renderAttachmentGroup(childrenContainer, attachmentsHere, `__attachments__:${treePath}`, depth + 1);
-		}
 	}
 
-	private renderTagNode(container: HTMLElement, tag: string, depth: number, ancestors: string[] = [], ancestorSet: Set<string> = new Set()): void {
-		// Delegate to renderTagOrGroupNode with a single-tag group
-		this.renderTagOrGroupNode(container, { tags: [tag], displayName: tag }, depth, ancestors, ancestorSet);
+	/** Queue a file row for rendering. */
+	private collectFileRow(rows: ExplorerRow[], file: TFile, depth: number, listMode: boolean, instanceKey: string): void {
+		rows.push({
+			key: `${instanceKey}|${file.path}`,
+			render: (container) => this.renderFileNode(container, file, depth, listMode, instanceKey)
+		});
 	}
 
 	private renderFileNode(container: HTMLElement, file: TFile, depth: number, listMode: boolean = false, instanceKey: string = 'file:__flat__'): void {
@@ -1077,12 +1214,33 @@ export class TagExplorerView extends ItemView {
 	}
 
 	/**
-	 * Render the "Untagged" group with collapsible files
+	 * Collect the "Untagged" group header and, when expanded, its files.
 	 */
-	private renderUntaggedGroup(container: HTMLElement, files: TFile[]): void {
+	private collectUntaggedRows(rows: ExplorerRow[], files: TFile[]): void {
 		const UNTAGGED_KEY = '__untagged__';
 		const isExpanded = this.expandedPaths.has(UNTAGGED_KEY);
-		
+
+		rows.push({
+			key: null,
+			render: (container) => this.renderUntaggedHeader(container, isExpanded)
+		});
+
+		if (isExpanded) {
+			for (const file of files) {
+				this.collectFileRow(rows, file, 1, false, 'file:__untagged__');
+			}
+			// Attachments referenced by untagged files, shown alongside them
+			const attachments = this.collectAlongsideAttachments(files);
+			this.collectAttachmentRows(rows, attachments, '__attachments__:__untagged__', 2);
+		}
+	}
+
+	/**
+	 * Render the "Untagged" group header row.
+	 */
+	private renderUntaggedHeader(container: HTMLElement, isExpanded: boolean): void {
+		const UNTAGGED_KEY = '__untagged__';
+
 		// Create the untagged item
 		const untaggedItem = container.createEl('div', { 
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
@@ -1111,19 +1269,8 @@ export class TagExplorerView extends ItemView {
 			} else {
 				this.expandedPaths.add(UNTAGGED_KEY);
 			}
-			this.refresh();
+			this.redraw();
 		});
-
-		// Render children if expanded
-		if (isExpanded) {
-			const childrenContainer = untaggedItem.createEl('div', { cls: 'tree-item-children nav-folder-children' });
-			for (const file of files) {
-				this.renderFileNode(childrenContainer, file, 1, false, 'file:__untagged__');
-			}
-			// Attachments referenced by untagged files, shown alongside them
-			const attachments = this.collectAlongsideAttachments(files);
-			this.renderAttachmentGroup(childrenContainer, attachments, '__attachments__:__untagged__', 2);
-		}
 	}
 
 	/**
@@ -1212,7 +1359,7 @@ export class TagExplorerView extends ItemView {
 	 * listed directly under "Attachments"; if it only has unreferenced attachments,
 	 * they are listed directly under "Unreferenced attachments".
 	 */
-	private renderAttachmentGroup(container: HTMLElement, attachments: TFile[], keyBase: string, depth: number): void {
+	private collectAttachmentRows(rows: ExplorerRow[], attachments: TFile[], keyBase: string, depth: number): void {
 		if (!this.plugin.settings.displayAttachments) return;
 		const unique = this.dedupSortedAttachments(attachments);
 		if (unique.length === 0) return;
@@ -1221,7 +1368,7 @@ export class TagExplorerView extends ItemView {
 
 		if (grouping === 'no') {
 			for (const file of unique) {
-				this.renderFileNode(container, file, depth, false, `attachment:${keyBase}`);
+				this.collectFileRow(rows, file, depth, false, `attachment:${keyBase}`);
 			}
 			return;
 		}
@@ -1243,60 +1390,63 @@ export class TagExplorerView extends ItemView {
 
 		// 'yes' or 'split': collapsible group folder
 		const isExpanded = this.expandedPaths.has(keyBase);
-		const item = container.createEl('div', {
-			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
-		});
-
-		const title = item.createEl('div', {
-			cls: 'tree-item-self is-clickable tag-item attachment-group-item',
-		});
-		title.style.paddingLeft = `${depth * 12 + 4}px`;
-
-		const expandIcon = title.createEl('div', {
-			cls: 'nav-folder-collapse-indicator collapse-icon'
-		});
-		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
-
-		const label = title.createEl('span', { cls: 'tag-name attachment-group-label' });
-		label.textContent = labelText;
-
-		title.addEventListener('click', (e) => {
-			e.stopPropagation();
-			if (isExpanded) {
-				this.expandedPaths.delete(keyBase);
-			} else {
-				this.expandedPaths.add(keyBase);
-			}
-			this.refresh();
+		rows.push({
+			key: null,
+			render: (container) => this.renderCollapsibleGroupHeader(
+				container, labelText, keyBase, depth, isExpanded, 'attachment-group'
+			)
 		});
 
 		if (!isExpanded) return;
 
-		const childrenContainer = item.createEl('div', { cls: 'tree-item-children nav-folder-children' });
-
 		if (grouping === 'split' && useSubgroups) {
-			this.renderAttachmentSubgroup(childrenContainer, 'Referenced', `${keyBase}:ref`, depth + 1, referenced);
-			this.renderAttachmentSubgroup(childrenContainer, 'Unreferenced', `${keyBase}:unref`, depth + 1, unreferenced);
+			this.collectAttachmentSubgroupRows(rows, 'Referenced', `${keyBase}:ref`, depth + 1, referenced);
+			this.collectAttachmentSubgroupRows(rows, 'Unreferenced', `${keyBase}:unref`, depth + 1, unreferenced);
 		} else {
 			for (const file of unique) {
-				this.renderFileNode(childrenContainer, file, depth + 1, false, `attachment:${keyBase}`);
+				this.collectFileRow(rows, file, depth + 1, false, `attachment:${keyBase}`);
 			}
 		}
 	}
 
 	/**
-	 * Render a collapsible subgroup ("Referenced" / "Unreferenced") of attachments.
+	 * Collect a collapsible subgroup ("Referenced" / "Unreferenced") of attachments.
 	 */
-	private renderAttachmentSubgroup(container: HTMLElement, labelText: string, key: string, depth: number, files: TFile[]): void {
+	private collectAttachmentSubgroupRows(rows: ExplorerRow[], labelText: string, key: string, depth: number, files: TFile[]): void {
 		if (files.length === 0) return;
 
 		const isExpanded = this.expandedPaths.has(key);
+		rows.push({
+			key: null,
+			render: (container) => this.renderCollapsibleGroupHeader(
+				container, labelText, key, depth, isExpanded, 'attachment-subgroup'
+			)
+		});
+
+		if (!isExpanded) return;
+
+		for (const file of files) {
+			this.collectFileRow(rows, file, depth + 1, false, `attachment:${key}`);
+		}
+	}
+
+	/**
+	 * Render the header row of a collapsible attachment group or subgroup.
+	 */
+	private renderCollapsibleGroupHeader(
+		container: HTMLElement,
+		labelText: string,
+		expansionKey: string,
+		depth: number,
+		isExpanded: boolean,
+		variant: 'attachment-group' | 'attachment-subgroup'
+	): void {
 		const item = container.createEl('div', {
 			cls: `tree-item nav-folder${isExpanded ? ' is-expanded' : ''}`
 		});
 
 		const title = item.createEl('div', {
-			cls: 'tree-item-self is-clickable tag-item attachment-subgroup-item',
+			cls: `tree-item-self is-clickable tag-item ${variant}-item`,
 		});
 		title.style.paddingLeft = `${depth * 12 + 4}px`;
 
@@ -1305,25 +1455,18 @@ export class TagExplorerView extends ItemView {
 		});
 		setIcon(expandIcon, isExpanded ? 'chevron-down' : 'chevron-right');
 
-		const label = title.createEl('span', { cls: 'tag-name attachment-subgroup-label' });
+		const label = title.createEl('span', { cls: `tag-name ${variant}-label` });
 		label.textContent = labelText;
 
 		title.addEventListener('click', (e) => {
 			e.stopPropagation();
 			if (isExpanded) {
-				this.expandedPaths.delete(key);
+				this.expandedPaths.delete(expansionKey);
 			} else {
-				this.expandedPaths.add(key);
+				this.expandedPaths.add(expansionKey);
 			}
-			this.refresh();
+			this.redraw();
 		});
-
-		if (!isExpanded) return;
-
-		const childrenContainer = item.createEl('div', { cls: 'tree-item-children nav-folder-children' });
-		for (const file of files) {
-			this.renderFileNode(childrenContainer, file, depth + 1, false, `attachment:${key}`);
-		}
 	}
 
 	private showTagContextMenu(event: MouseEvent, tag: string, ancestors: string[] = []): void {
@@ -1747,7 +1890,10 @@ export class TagExplorerView extends ItemView {
 		// Flat modes: at most one file-item instance
 		if (this.contentMode === 'files' || this.viewMode === 'list') {
 			if (showFiles) {
-				const allFiles = this.getAllFilesForDisplay(tagsToRender);
+				const untaggedFiles = (this.plugin.settings.showUntaggedFiles && this.filterTags.size === 0)
+					? this.plugin.tagIndex.getUntaggedFiles()
+					: [];
+				const allFiles = this.getAllFilesForDisplay(tagsToRender, untaggedFiles);
 				if (allFiles.some(f => f.path === file.path)) {
 					instances.push({ instanceKey: 'file:__flat__', expandPaths: [] });
 				}
@@ -1875,20 +2021,29 @@ export class TagExplorerView extends ItemView {
 
 		this.pendingRevealKey = instance.instanceKey;
 		this.pendingRevealFilePath = file.path;
-		await this.refresh();
+		this.redraw();
 	}
 
 	/**
 	 * Scroll to and briefly highlight the revealed instance.
 	 */
 	private applyRevealHighlight(instanceKey: string, filePath: string | null): void {
-		// Clear any previous highlight
 		this.contentEl.querySelectorAll('.is-highlighted').forEach(el => {
 			el.removeClass('is-highlighted');
 		});
 		if (this.highlightTimeout) {
 			window.clearTimeout(this.highlightTimeout);
 			this.highlightTimeout = null;
+		}
+
+		const targetKey = (instanceKey.startsWith('file:') && filePath)
+			? `${instanceKey}|${filePath}`
+			: instanceKey;
+		const index = this.rows.findIndex(row => row.key === targetKey);
+		const scrollContainer = this.contentEl.querySelector('.scroll-container') as HTMLElement | null;
+		if (index !== -1 && scrollContainer) {
+			scrollContainer.scrollTop = Math.max(0, index * ROW_HEIGHT - scrollContainer.clientHeight / 2 + ROW_HEIGHT / 2);
+			this.paintVisibleRows();
 		}
 
 		let el: HTMLElement | null = null;
@@ -1903,22 +2058,7 @@ export class TagExplorerView extends ItemView {
 		}
 		if (!el) return;
 
-		// Jump directly within the explorer scroll container (no smooth scroll from top)
-		const scrollContainer = this.contentEl.querySelector('.scroll-container') as HTMLElement | null;
-		if (scrollContainer) {
-			const elRect = el.getBoundingClientRect();
-			const containerRect = scrollContainer.getBoundingClientRect();
-			const offset =
-				scrollContainer.scrollTop +
-				(elRect.top - containerRect.top) -
-				(containerRect.height / 2) +
-				(elRect.height / 2);
-			scrollContainer.scrollTop = Math.max(0, offset);
-		} else {
-			el.scrollIntoView({ block: 'center', behavior: 'auto' });
-		}
 		el.addClass('is-highlighted');
-
 		this.highlightTimeout = window.setTimeout(() => {
 			el!.removeClass('is-highlighted');
 			this.highlightTimeout = null;
@@ -1972,7 +2112,7 @@ export class TagExplorerView extends ItemView {
 		this.filterTags.clear();
 		this.excludeTags.clear();
 		this.filterTags.add(normalizedTag);
-		this.refresh();
+		this.redraw();
 	}
 
 	/**
@@ -1984,7 +2124,7 @@ export class TagExplorerView extends ItemView {
 		// Don't add if already in filters or excludes
 		if (!this.filterTags.has(normalizedTag) && !this.excludeTags.has(normalizedTag)) {
 			this.filterTags.add(normalizedTag);
-			this.refresh();
+			this.redraw();
 		}
 	}
 
@@ -1997,7 +2137,7 @@ export class TagExplorerView extends ItemView {
 		// Don't add if already in filters or excludes
 		if (!this.filterTags.has(normalizedTag) && !this.excludeTags.has(normalizedTag)) {
 			this.excludeTags.add(normalizedTag);
-			this.refresh();
+			this.redraw();
 		}
 	}
 
@@ -2110,16 +2250,10 @@ export class TagExplorerView extends ItemView {
 					cls: 'filter-suggestion-item'
 				});
 				
-				// Tag name (clickable to include)
-				const tagText = item.createEl('span', { 
+				// Tag name
+				item.createEl('span', { 
 					cls: 'filter-suggestion-text',
 					text: tag
-				});
-				tagText.addEventListener('mousedown', (e) => {
-					e.preventDefault(); // Prevent blur before click registers
-					this.addFilterTag(tag);
-					input.value = '';
-					hideSuggestions();
 				});
 				
 				// Exclude button
@@ -2131,9 +2265,13 @@ export class TagExplorerView extends ItemView {
 				excludeBtn.addEventListener('mousedown', (e) => {
 					e.preventDefault();
 					e.stopPropagation();
-					this.addExcludeTag(tag);
-					input.value = '';
-					hideSuggestions();
+					this.addExcludeTag(tag, true);
+				});
+
+				// Whole row is clickable (including padding) so include always registers
+				item.addEventListener('mousedown', (e) => {
+					e.preventDefault(); // Prevent blur before the selection is applied
+					this.addFilterTag(tag, true);
 				});
 				
 				item.addEventListener('mouseenter', () => {
@@ -2155,6 +2293,12 @@ export class TagExplorerView extends ItemView {
 		};
 
 		input.addEventListener('input', updateSuggestions);
+		input.addEventListener('focus', updateSuggestions);
+		input.addEventListener('click', () => {
+			if (suggestionsEl.style.display === 'none') {
+				updateSuggestions();
+			}
+		});
 
 		input.addEventListener('keydown', (e) => {
 			if (e.key === 'ArrowDown') {
@@ -2172,9 +2316,7 @@ export class TagExplorerView extends ItemView {
 			} else if (e.key === 'Enter') {
 				e.preventDefault();
 				if (selectedIndex >= 0 && selectedIndex < filteredSuggestions.length) {
-					this.addFilterTag(filteredSuggestions[selectedIndex]);
-					input.value = '';
-					hideSuggestions();
+					this.addFilterTag(filteredSuggestions[selectedIndex], true);
 				}
 			} else if (e.key === 'Escape') {
 				hideSuggestions();
@@ -2253,25 +2395,47 @@ export class TagExplorerView extends ItemView {
 				e.stopPropagation();
 				this.filterTags.clear();
 				this.excludeTags.clear();
-				this.refresh();
+				this.focusFilterInputAfterRefresh = true;
+				this.redraw();
 			});
+		}
+
+		if (this.focusFilterInputAfterRefresh) {
+			this.focusFilterInputAfterRefresh = false;
+			window.setTimeout(() => input.focus(), 0);
 		}
 	}
 
 	/**
 	 * Add a tag to the filter
 	 */
-	private addFilterTag(tag: string): void {
+	private addFilterTag(tag: string, focusInput = false): void {
 		this.filterTags.add(tag);
-		this.refresh();
+		if (focusInput) this.focusFilterInputAfterRefresh = true;
+		this.redraw();
 	}
 
 	/**
 	 * Add a tag to the exclude list
 	 */
-	private addExcludeTag(tag: string): void {
+	private addExcludeTag(tag: string, focusInput = false): void {
 		this.excludeTags.add(tag);
-		this.refresh();
+		if (focusInput) this.focusFilterInputAfterRefresh = true;
+		this.redraw();
+	}
+
+	/**
+	 * Switch a filter chip between include and exclude
+	 */
+	private toggleFilterMode(tag: string, currentlyExcluded: boolean): void {
+		if (currentlyExcluded) {
+			this.excludeTags.delete(tag);
+			this.filterTags.add(tag);
+		} else {
+			this.filterTags.delete(tag);
+			this.excludeTags.add(tag);
+		}
+		this.redraw();
 	}
 
 	/**
@@ -2366,6 +2530,16 @@ export class TagExplorerView extends ItemView {
 		const chip = container.createEl('div', { 
 			cls: `filter-chip${isExcluded ? ' filter-chip-excluded' : ''}` 
 		});
+
+		const toggleBtn = chip.createEl('div', {
+			cls: 'filter-chip-toggle',
+			attr: { 'aria-label': isExcluded ? 'Include this tag' : 'Exclude this tag' }
+		});
+		setIcon(toggleBtn, isExcluded ? 'minus' : 'plus');
+		toggleBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.toggleFilterMode(tag, isExcluded);
+		});
 		
 		const chipText = chip.createEl('span', { text: tag, cls: 'filter-chip-text' });
 		
@@ -2394,7 +2568,7 @@ export class TagExplorerView extends ItemView {
 			} else {
 				this.filterTags.delete(tag);
 			}
-			this.refresh();
+			this.redraw();
 		});
 	}
 
@@ -2426,6 +2600,14 @@ export class TagExplorerView extends ItemView {
 		menu.addSeparator();
 
 		menu.addItem((item: any) => {
+			item.setTitle(isExcluded ? 'Include tag' : 'Exclude tag')
+				.setIcon(isExcluded ? 'filter' : 'filter-x')
+				.onClick(() => {
+					this.toggleFilterMode(tag, isExcluded);
+				});
+		});
+
+		menu.addItem((item: any) => {
 			item.setTitle('Remove from filter')
 				.setIcon('x')
 				.onClick(() => {
@@ -2434,7 +2616,7 @@ export class TagExplorerView extends ItemView {
 					} else {
 						this.filterTags.delete(tag);
 					}
-					this.refresh();
+					this.redraw();
 				});
 		});
 
@@ -2652,12 +2834,28 @@ export class TagExplorerView extends ItemView {
 			}
 			/* Remove padding/margin from containers to eliminate scrollbar gap */
 			.taggable-tags-explorer .nav-files-container {
+				position: relative;
 				padding: 0 !important;
 				margin: 0 !important;
 			}
 			.taggable-tags-explorer .nav-folder.mod-root {
 				padding: 0 !important;
 				margin: 0 !important;
+			}
+			.taggable-tags-explorer .virtual-list-spacer {
+				pointer-events: none;
+			}
+			.taggable-tags-explorer .virtual-list-window {
+				position: absolute;
+				left: 0;
+				right: 0;
+			}
+			.taggable-tags-explorer .virtual-row {
+				height: 26px;
+				overflow: hidden;
+			}
+			.taggable-tags-explorer .virtual-row > .tree-item {
+				margin-bottom: 0 !important;
 			}
 			.taggable-tags-explorer .tree-item {
 				padding-right: 0 !important;
@@ -2880,9 +3078,9 @@ export class TagExplorerView extends ItemView {
 			}
 			.taggable-tags-explorer .filter-suggestion-item {
 				display: flex;
-				align-items: center;
+				align-items: stretch;
 				justify-content: space-between;
-				padding: 6px 10px;
+				padding: 0;
 				cursor: pointer;
 				font-size: 13px;
 			}
@@ -2892,18 +3090,21 @@ export class TagExplorerView extends ItemView {
 			}
 			.taggable-tags-explorer .filter-suggestion-text {
 				flex-grow: 1;
+				display: flex;
+				align-items: center;
+				padding: 6px 10px;
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
 			}
 			.taggable-tags-explorer .filter-suggestion-exclude {
 				flex-shrink: 0;
-				padding: 2px 6px;
-				margin-left: 8px;
+				display: flex;
+				align-items: center;
+				padding: 6px 10px;
 				cursor: pointer;
 				opacity: 0.5;
 				font-size: 14px;
-				border-radius: 4px;
 			}
 			.taggable-tags-explorer .filter-suggestion-exclude:hover {
 				opacity: 1;
@@ -2947,6 +3148,25 @@ export class TagExplorerView extends ItemView {
 				border-radius: 14px;
 				font-size: 13px;
 				line-height: 1.4;
+			}
+			.taggable-tags-explorer .filter-chip-toggle {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 14px;
+				height: 14px;
+				cursor: pointer;
+				border-radius: 50%;
+				opacity: 0.7;
+				flex-shrink: 0;
+			}
+			.taggable-tags-explorer .filter-chip-toggle:hover {
+				opacity: 1;
+				background-color: var(--background-modifier-hover);
+			}
+			.taggable-tags-explorer .filter-chip-toggle svg {
+				width: 12px;
+				height: 12px;
 			}
 			.taggable-tags-explorer .filter-chip-text {
 				overflow: hidden;
